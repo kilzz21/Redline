@@ -1,20 +1,41 @@
+import { useState } from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+
+import { MicProvider } from './src/context/MicContext';
+import MicBar from './src/components/MicBar';
+import SplashScreen from './src/screens/SplashScreen';
+import AuthNavigator from './src/navigation/AuthNavigator';
+import TabNavigator from './src/navigation/TabNavigator';
 
 export default function App() {
+  const [splashDone, setSplashDone] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  // Show splash until animation completes
+  if (!splashDone) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <SplashScreen onDone={() => setSplashDone(true)} />
+      </SafeAreaProvider>
+    );
+  }
+
   return (
-    <View style={styles.container}>
-      <Text>Open up App.js to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <SafeAreaProvider>
+      <MicProvider>
+        <StatusBar style="light" />
+        {/* MicBar sits above navigation, only shown in main app */}
+        {isLoggedIn && <MicBar />}
+        <NavigationContainer>
+          {isLoggedIn
+            ? <TabNavigator />
+            : <AuthNavigator onLogin={() => setIsLoggedIn(true)} />
+          }
+        </NavigationContainer>
+      </MicProvider>
+    </SafeAreaProvider>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
