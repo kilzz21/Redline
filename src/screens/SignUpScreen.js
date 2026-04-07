@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  ScrollView, KeyboardAvoidingView, Platform,
+  ScrollView, KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '../config/firebase';
 
 const ORANGE = '#f97316';
 
@@ -23,7 +26,7 @@ function Field({ placeholder, value, onChangeText, secureTextEntry, keyboardType
   );
 }
 
-export default function SignUpScreen({ navigation, onLogin }) {
+export default function SignUpScreen({ navigation }) {
   const insets = useSafeAreaInsets();
 
   const [name, setName] = useState('');
@@ -33,6 +36,31 @@ export default function SignUpScreen({ navigation, onLogin }) {
   const [make, setMake] = useState('');
   const [model, setModel] = useState('');
   const [color, setColor] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSignUp = async () => {
+    if (!name || !email || !password) {
+      Alert.alert('Missing fields', 'Please fill in your name, email, and password.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { user } = await createUserWithEmailAndPassword(auth, email, password);
+
+      await setDoc(doc(db, 'users', user.uid), {
+        name,
+        email,
+        car: { year, make, model, color },
+        createdAt: serverTimestamp(),
+      });
+      // onAuthStateChanged in App.js will detect the new user and navigate to main app
+    } catch (error) {
+      Alert.alert('Sign up failed', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <KeyboardAvoidingView
@@ -49,7 +77,6 @@ export default function SignUpScreen({ navigation, onLogin }) {
         showsVerticalScrollIndicator={false}
       >
 
-        {/* Back + title */}
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Text style={styles.backText}>← back</Text>
         </TouchableOpacity>
@@ -57,7 +84,6 @@ export default function SignUpScreen({ navigation, onLogin }) {
         <Text style={styles.logoSmall}>REDLINE</Text>
         <Text style={styles.title}>create account</Text>
 
-        {/* Account fields */}
         <Text style={styles.sectionLabel}>your details</Text>
         <Field placeholder="full name" value={name} onChangeText={setName} />
         <Field
@@ -75,7 +101,6 @@ export default function SignUpScreen({ navigation, onLogin }) {
           autoCapitalize="none"
         />
 
-        {/* Car fields */}
         <Text style={styles.sectionLabel}>your car</Text>
         <Field
           placeholder="year  (e.g. 2021)"
@@ -88,13 +113,23 @@ export default function SignUpScreen({ navigation, onLogin }) {
         <Field placeholder="model  (e.g. Supra GR)" value={model} onChangeText={setModel} />
         <Field placeholder="color  (e.g. Nitro Yellow)" value={color} onChangeText={setColor} />
 
-        {/* Submit */}
-        <TouchableOpacity style={styles.btnPrimary} onPress={onLogin} activeOpacity={0.85}>
-          <Text style={styles.btnPrimaryText}>create account</Text>
+        <TouchableOpacity
+          style={[styles.btnPrimary, loading && styles.btnDisabled]}
+          onPress={handleSignUp}
+          disabled={loading}
+          activeOpacity={0.85}
+        >
+          {loading
+            ? <ActivityIndicator color="#fff" />
+            : <Text style={styles.btnPrimaryText}>create account</Text>
+          }
         </TouchableOpacity>
 
         <TouchableOpacity onPress={() => navigation.navigate('Login')}>
-          <Text style={styles.switchLink}>already have an account? <Text style={styles.switchLinkOrange}>log in</Text></Text>
+          <Text style={styles.switchLink}>
+            already have an account?{' '}
+            <Text style={styles.switchLinkOrange}>log in</Text>
+          </Text>
         </TouchableOpacity>
 
       </ScrollView>
@@ -161,6 +196,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 8,
     marginBottom: 20,
+  },
+  btnDisabled: {
+    opacity: 0.6,
   },
   btnPrimaryText: {
     color: '#fff',

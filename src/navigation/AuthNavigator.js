@@ -5,7 +5,7 @@ import LoginScreen from '../screens/LoginScreen';
 
 const Stack = createNativeStackNavigator();
 
-export default function AuthNavigator({ onLogin }) {
+export default function AuthNavigator() {
   return (
     <Stack.Navigator
       screenOptions={{
@@ -15,12 +15,8 @@ export default function AuthNavigator({ onLogin }) {
       }}
     >
       <Stack.Screen name="Welcome" component={WelcomeScreen} />
-      <Stack.Screen name="SignUp">
-        {(props) => <SignUpScreen {...props} onLogin={onLogin} />}
-      </Stack.Screen>
-      <Stack.Screen name="Login">
-        {(props) => <LoginScreen {...props} onLogin={onLogin} />}
-      </Stack.Screen>
+      <Stack.Screen name="SignUp" component={SignUpScreen} />
+      <Stack.Screen name="Login" component={LoginScreen} />
     </Stack.Navigator>
   );
 }

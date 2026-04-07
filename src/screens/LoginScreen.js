@@ -1,16 +1,36 @@
 import { useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  KeyboardAvoidingView, Platform,
+  KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { signInWithEmailAndPassword } from 'firebase/auth';
+import { auth } from '../config/firebase';
 
 const ORANGE = '#f97316';
 
-export default function LoginScreen({ navigation, onLogin }) {
+export default function LoginScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async () => {
+    if (!email || !password) {
+      Alert.alert('Missing fields', 'Please enter your email and password.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      // onAuthStateChanged in App.js will detect the user and navigate to main app
+    } catch (error) {
+      Alert.alert('Log in failed', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <KeyboardAvoidingView
@@ -19,7 +39,6 @@ export default function LoginScreen({ navigation, onLogin }) {
     >
       <View style={[styles.inner, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 32 }]}>
 
-        {/* Back + header */}
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Text style={styles.backText}>← back</Text>
         </TouchableOpacity>
@@ -27,7 +46,6 @@ export default function LoginScreen({ navigation, onLogin }) {
         <Text style={styles.logoSmall}>REDLINE</Text>
         <Text style={styles.title}>log in</Text>
 
-        {/* Inputs */}
         <TextInput
           style={styles.input}
           placeholder="email"
@@ -49,17 +67,22 @@ export default function LoginScreen({ navigation, onLogin }) {
           autoCorrect={false}
         />
 
-        {/* Forgot password */}
         <TouchableOpacity style={styles.forgotWrap}>
           <Text style={styles.forgotText}>forgot password?</Text>
         </TouchableOpacity>
 
-        {/* Log in button */}
-        <TouchableOpacity style={styles.btnPrimary} onPress={onLogin} activeOpacity={0.85}>
-          <Text style={styles.btnPrimaryText}>log in</Text>
+        <TouchableOpacity
+          style={[styles.btnPrimary, loading && styles.btnDisabled]}
+          onPress={handleLogin}
+          disabled={loading}
+          activeOpacity={0.85}
+        >
+          {loading
+            ? <ActivityIndicator color="#fff" />
+            : <Text style={styles.btnPrimaryText}>log in</Text>
+          }
         </TouchableOpacity>
 
-        {/* Switch to sign up */}
         <TouchableOpacity onPress={() => navigation.navigate('SignUp')}>
           <Text style={styles.switchLink}>
             no account?{' '}
@@ -128,6 +151,9 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     alignItems: 'center',
     marginBottom: 20,
+  },
+  btnDisabled: {
+    opacity: 0.6,
   },
   btnPrimaryText: {
     color: '#fff',

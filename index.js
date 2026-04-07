@@ -1,3 +1,13 @@
+import { getRandomValues } from 'expo-crypto';
+
+// Polyfill crypto.getRandomValues for Firebase
+if (typeof global.crypto !== 'object') {
+  global.crypto = {};
+}
+if (!global.crypto.getRandomValues) {
+  global.crypto.getRandomValues = getRandomValues;
+}
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';
