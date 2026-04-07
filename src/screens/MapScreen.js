@@ -10,7 +10,7 @@ import MapView, { Marker, Polyline, UrlTile } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 import {
-  doc, setDoc, addDoc, collection, serverTimestamp, onSnapshot, updateDoc,
+  doc, setDoc, addDoc, collection, serverTimestamp, onSnapshot, updateDoc, deleteField,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions } from '../config/firebase';
@@ -759,27 +759,51 @@ export default function MapScreen({ navigation }) {
 
   const handleClearDestination = useCallback(async () => {
     if (!activeCrewId) return;
-    Alert.alert('Clear meetup?', 'Remove the destination for everyone in this crew.', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('Cancel meetup?', 'Remove the destination for everyone in this crew.', [
+      { text: 'Keep it', style: 'cancel' },
       {
-        text: 'Clear',
+        text: 'Cancel meetup',
         style: 'destructive',
         onPress: async () => {
           try {
-            await updateDoc(doc(db, 'crews', activeCrewId), { destination: null });
-            // Clear arrived status for self
-            await setDoc(doc(db, 'users', uid), {
-              arrivedAtDestination: false,
-              otwToDestination: false,
-            }, { merge: true });
+            const destName = destinationRef.current?.name ?? 'the meetup';
+            const myName = myProfileRef.current?.name || auth.currentUser?.email || 'Someone';
+            const crew = crewsRef.current.find((c) => c.id === activeCrewId);
+
+            // Remove destination field from crew doc
+            await updateDoc(doc(db, 'crews', activeCrewId), { destination: deleteField() });
+
+            // Clear arrived + OTW status for all crew members
+            if (crew?.members?.length) {
+              await Promise.all(
+                crew.members.map((memberId) =>
+                  setDoc(doc(db, 'users', memberId), {
+                    arrivedAtDestination: false,
+                    otwToDestination: false,
+                    otwCrewId: null,
+                  }, { merge: true })
+                )
+              );
+            }
+
             arrivedRef.current = false;
+            setOtw(false);
+
+            // Notify crew
+            if (crew?.members) {
+              crew.members.forEach((memberId) => {
+                if (memberId !== uid) {
+                  pushNotify(memberId, '❌ meetup cancelled', `${myName} cancelled ${destName}`, { type: 'crewInvite' });
+                }
+              });
+            }
           } catch (e) {
             Alert.alert('Failed', e.message);
           }
         },
       },
     ]);
-  }, [activeCrewId, uid]);
+  }, [activeCrewId, uid, setOtw]);
 
   const toggleOtw = useCallback(async () => {
     const newOtw = !otw;
@@ -827,9 +851,9 @@ export default function MapScreen({ navigation }) {
           maxZoomLevel={18}
           onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          {/* Stadia Maps Alidade Smooth Dark — free tier, no API key needed */}
+          {/* OpenStreetMap — always free, no API key */}
           <UrlTile
-            urlTemplate="https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png"
+            urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
             maximumZ={18}
             minimumZ={10}
             flipY={false}
@@ -1007,11 +1031,13 @@ export default function MapScreen({ navigation }) {
                   <Text style={styles.arrivedChipText}>arrived ✓</Text>
                 </View>
               )}
-              {isCrewCreator && (
-                <TouchableOpacity onPress={handleClearDestination} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Ionicons name="close-circle-outline" size={20} color="#555" />
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity
+                style={styles.cancelMeetupBtn}
+                onPress={handleClearDestination}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.cancelMeetupText}>cancel meetup</Text>
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -1270,6 +1296,11 @@ const styles = StyleSheet.create({
   otwBtnActive: { backgroundColor: '#1d3a6e', borderColor: '#3b82f6' },
   otwBtnText: { color: '#888', fontSize: 11, fontWeight: '700' },
   otwBtnTextActive: { color: '#60a5fa' },
+  cancelMeetupBtn: {
+    backgroundColor: '#2a1a1a', borderRadius: 8, borderWidth: 1,
+    borderColor: '#ef444455', paddingHorizontal: 10, paddingVertical: 5,
+  },
+  cancelMeetupText: { color: '#ef4444', fontSize: 11, fontWeight: '700' },
 
   arrivedChip: {
     backgroundColor: '#14532d', borderRadius: 8, borderWidth: 1,
