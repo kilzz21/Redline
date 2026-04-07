@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Text, StyleSheet } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
+import * as Network from 'expo-network';
 
 export default function OfflineBanner() {
   const [offline, setOffline] = useState(false);
   const translateY = useRef(new Animated.Value(-40)).current;
 
   useEffect(() => {
-    const unsub = NetInfo.addEventListener((state) => {
+    // Check initial state
+    Network.getNetworkStateAsync().then((state) => {
       setOffline(!state.isConnected);
     });
-    return unsub;
+
+    // Subscribe to changes
+    const subscription = Network.addNetworkStateListener((state) => {
+      setOffline(!state.isConnected);
+    });
+
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {
