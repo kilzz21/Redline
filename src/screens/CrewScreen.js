@@ -551,7 +551,12 @@ function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap,
               {profiles.map((p) => {
                 const online = isOnline(p);
                 return (
-                  <View key={p.id} style={styles.memberRow}>
+                  <TouchableOpacity
+                    key={p.id}
+                    style={styles.memberRow}
+                    onPress={() => navigation.navigate('FriendProfile', { uid: p.id })}
+                    activeOpacity={0.7}
+                  >
                     <Avatar photoURL={p.photoURL} name={p.name} uid={p.id} size={40} />
                     <View style={[styles.cardBody, { marginLeft: 12 }]}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -562,7 +567,7 @@ function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap,
                       {formatCarString(p.car) ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(p.car)}</Text> : null}
                     </View>
                     <View style={[styles.onlineDotGreen, { backgroundColor: online ? '#22c55e' : '#333' }]} />
-                  </View>
+                  </TouchableOpacity>
                 );
               })}
 
@@ -1363,7 +1368,12 @@ export default function CrewScreen({ navigation, route }) {
           </View>
         ) : (
           connections.map((c) => (
-            <View key={c.id} style={styles.card}>
+            <TouchableOpacity
+              key={c.id}
+              style={styles.card}
+              onPress={() => navigation.navigate('FriendProfile', { uid: c.id })}
+              activeOpacity={0.7}
+            >
               <Avatar photoURL={c.photoURL} name={c.name} uid={c.id} size={40} />
               <View style={[styles.cardBody, { marginLeft: 12 }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -1373,7 +1383,7 @@ export default function CrewScreen({ navigation, route }) {
                 {c.username ? <Text style={styles.subText} numberOfLines={1}>@{c.username}</Text> : null}
                 {formatCarString(c.car) ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(c.car)}</Text> : null}
               </View>
-            </View>
+            </TouchableOpacity>
           ))
         )}
 

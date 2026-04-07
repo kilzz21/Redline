@@ -12,7 +12,7 @@ import MicBar from './src/components/MicBar';
 import OfflineBanner from './src/components/OfflineBanner';
 import SplashScreen from './src/screens/SplashScreen';
 import AuthNavigator from './src/navigation/AuthNavigator';
-import TabNavigator from './src/navigation/TabNavigator';
+import MainNavigator from './src/navigation/MainNavigator';
 import { navigationRef } from './src/navigation/navigationRef';
 import { registerForPushNotificationsAsync, savePushToken } from './src/utils/notifications';
 
@@ -22,7 +22,11 @@ const linking = {
   prefixes: ['redline://'],
   config: {
     screens: {
-      Crew: 'invite/:inviteUserId',
+      Tabs: {
+        screens: {
+          Crew: 'invite/:inviteUserId',
+        },
+      },
     },
   },
 };
@@ -92,7 +96,7 @@ export default function App() {
         <StatusBar style="light" />
         {user && <MicBar />}
         <NavigationContainer ref={navigationRef} linking={user ? linking : undefined}>
-          {user ? <TabNavigator /> : <AuthNavigator />}
+          {user ? <MainNavigator /> : <AuthNavigator />}
         </NavigationContainer>
       </MicProvider>
     </SafeAreaProvider>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Switch, Alert, ActivityIndicator, Modal, TextInput,
@@ -9,7 +9,7 @@ import {
   signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential,
   deleteUser,
 } from 'firebase/auth';
-import { doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import * as Haptics from 'expo-haptics';
 import { auth, db } from '../config/firebase';
 
@@ -185,10 +185,21 @@ function Divider() {
 export default function SettingsScreen({ visible, onClose, onEditProfile }) {
   const insets = useSafeAreaInsets();
   const [notifications, setNotifications] = useState({ newInvite: true, crewOnline: true, crewRadio: false });
+  const [statsPublic, setStatsPublic] = useState(true);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showReauth, setShowReauth] = useState(false);
   const [reauthAction, setReauthAction] = useState(null);
   const [logOutLoading, setLogOutLoading] = useState(false);
+
+  // Load statsPublic when modal opens
+  useEffect(() => {
+    if (!visible) return;
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    getDoc(doc(db, 'users', uid)).then((snap) => {
+      if (snap.exists()) setStatsPublic(snap.data().statsPublic !== false);
+    }).catch(() => {});
+  }, [visible]);
 
   const triggerReauth = (action) => {
     setReauthAction(() => action);
@@ -244,6 +255,14 @@ export default function SettingsScreen({ visible, onClose, onEditProfile }) {
         },
       ]
     );
+  };
+
+  const toggleStatsPublic = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const next = !statsPublic;
+    setStatsPublic(next);
+    const uid = auth.currentUser?.uid;
+    if (uid) updateDoc(doc(db, 'users', uid), { statsPublic: next }).catch(() => {});
   };
 
   const toggleNotification = (key) => {
@@ -320,6 +339,23 @@ export default function SettingsScreen({ visible, onClose, onEditProfile }) {
                 <Switch
                   value={notifications.crewRadio}
                   onValueChange={() => toggleNotification('crewRadio')}
+                  trackColor={{ false: '#2a2a2a', true: ORANGE }}
+                  thumbColor="#fff"
+                />
+              }
+            />
+          </View>
+
+          {/* Privacy */}
+          <SectionHeader title="privacy" />
+          <View style={styles.section}>
+            <Row
+              label="show my stats to crew"
+              sublabel="speed, miles, drives visible on your profile"
+              rightContent={
+                <Switch
+                  value={statsPublic}
+                  onValueChange={toggleStatsPublic}
                   trackColor={{ false: '#2a2a2a', true: ORANGE }}
                   thumbColor="#fff"
                 />

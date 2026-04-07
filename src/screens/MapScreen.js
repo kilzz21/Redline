@@ -10,7 +10,7 @@ import MapView, { Marker, Polyline, UrlTile } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 import {
-  doc, setDoc, addDoc, collection, serverTimestamp, onSnapshot, updateDoc, deleteField,
+  doc, setDoc, addDoc, collection, serverTimestamp, onSnapshot, updateDoc, deleteField, increment,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions } from '../config/firebase';
@@ -30,6 +30,13 @@ const ARRIVED_THRESHOLD_MILES = 0.124; // ~200 meters
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+function toDate(ts) {
+  if (!ts) return null;
+  if (typeof ts.toDate === 'function') return ts.toDate();
+  if (ts instanceof Date) return ts;
+  return new Date(ts);
+}
 
 function haversineMiles(lat1, lng1, lat2, lng2) {
   const R = 3958.8;
@@ -523,6 +530,27 @@ export default function MapScreen({ navigation }) {
       }
     }
 
+    function computeBearing(a, b) {
+      const lat1 = (a.lat * Math.PI) / 180;
+      const lat2 = (b.lat * Math.PI) / 180;
+      const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+      const y = Math.sin(dLng) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+      return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+
+    function computeTurnCount(coords) {
+      if (coords.length < 3) return 0;
+      let turns = 0;
+      for (let i = 1; i < coords.length - 1; i++) {
+        const h1 = computeBearing(coords[i - 1], coords[i]);
+        const h2 = computeBearing(coords[i], coords[i + 1]);
+        const diff = Math.abs(((h2 - h1 + 540) % 360) - 180);
+        if (diff > 25) turns++;
+      }
+      return turns;
+    }
+
     async function saveDrive() {
       driveStateRef.current = 'IDLE';
       clearTimeout(stopTimerRef.current);
@@ -538,6 +566,10 @@ export default function MapScreen({ navigation }) {
         distanceMiles += haversineMiles(coords[i - 1].lat, coords[i - 1].lng, coords[i].lat, coords[i].lng);
       }
       const avgSpeed = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
+      const startHour = toDate(startTime)?.getHours() ?? 0;
+      const startDay = toDate(startTime)?.getDay() ?? 0;
+      const isWeekend = startDay === 0 || startDay === 6;
+      const turnCount = computeTurnCount(coords);
       try {
         await addDoc(collection(db, 'users', currentUid, 'drives'), {
           startTime, endTime,
@@ -546,7 +578,19 @@ export default function MapScreen({ navigation }) {
           distance: Math.round(distanceMiles * 100) / 100,
           coordinates: coords,
           withCrew: crewsRef.current.length > 0,
+          startHour,
+          isWeekend,
+          turnCount,
         });
+        // Update user profile stats for badge computation
+        const profileUpdates = {};
+        if (startHour >= 0 && startHour < 5) profileUpdates.hasNightDrive = true;
+        if (startHour < 6) profileUpdates.hasEarlyDrive = true;
+        if (isWeekend) profileUpdates.weekendDrives = increment(1);
+        if (turnCount >= 20) profileUpdates.hasCanyonDrive = true;
+        if (Object.keys(profileUpdates).length > 0) {
+          updateDoc(doc(db, 'users', currentUid), profileUpdates).catch(() => {});
+        }
       } catch (e) {
         console.warn('Drive save failed:', e.message);
       }
