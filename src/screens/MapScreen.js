@@ -143,21 +143,24 @@ function DestinationPin({ name }) {
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
 async function searchNominatim(query, userLat, userLng) {
-  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=8&addressdetails=1`;
+  // Fetch more results so client-side distance sort has enough to work with
+  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=15&addressdetails=1&dedupe=1`;
   if (userLat != null && userLng != null) {
-    // Bias results toward the user's area; bounded=0 still allows global fallback
-    url += `&lat=${userLat}&lon=${userLng}`;
-    url += `&viewbox=${userLng - 0.5},${userLat - 0.5},${userLng + 0.5},${userLat + 0.5}&bounded=0`;
+    // Soft viewbox bias (~7mi box) — no bounded param so global results still appear
+    url += `&viewbox=${userLng - 0.1},${userLat - 0.1},${userLng + 0.1},${userLat + 0.1}`;
   }
   const res = await fetch(url, { headers: { 'User-Agent': 'Redline/1.0' } });
   const data = await res.json();
-  return data.map((r) => {
-    const lat = parseFloat(r.lat);
-    const lng = parseFloat(r.lon);
-    const dist = userLat != null ? haversineMiles(userLat, userLng, lat, lng) : null;
-    const namePart = r.display_name.split(',')[0].trim();
-    return { name: namePart, fullAddress: r.display_name, latitude: lat, longitude: lng, distance: dist };
-  }).sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
+  // Compute exact haversine distances then sort purely client-side
+  return data
+    .map((r) => {
+      const lat = parseFloat(r.lat);
+      const lng = parseFloat(r.lon);
+      const dist = userLat != null ? haversineMiles(userLat, userLng, lat, lng) : null;
+      const namePart = r.display_name.split(',')[0].trim();
+      return { name: namePart, fullAddress: r.display_name, latitude: lat, longitude: lng, distance: dist };
+    })
+    .sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
 }
 
 function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
@@ -824,10 +827,11 @@ export default function MapScreen({ navigation }) {
           maxZoomLevel={18}
           onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          {/* CartoDB Dark Matter Lite — dark grey base, visible roads */}
+          {/* Stadia Maps Alidade Smooth Dark — free tier, no API key needed */}
           <UrlTile
-            urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/dark_matter_lite/{z}/{x}/{y}.png"
+            urlTemplate="https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}.png"
             maximumZ={18}
+            minimumZ={10}
             flipY={false}
             tileSize={256}
             shouldReplaceMapContent
