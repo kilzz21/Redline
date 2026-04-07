@@ -11,6 +11,18 @@ import MicBar from './src/components/MicBar';
 import SplashScreen from './src/screens/SplashScreen';
 import AuthNavigator from './src/navigation/AuthNavigator';
 import TabNavigator from './src/navigation/TabNavigator';
+import { navigationRef } from './src/navigation/navigationRef';
+
+// ── Deep link config ──────────────────────────────────────────────────────────
+// redline://invite/USER_ID  →  Crew tab with { inviteUserId } param
+const linking = {
+  prefixes: ['redline://'],
+  config: {
+    screens: {
+      Crew: 'invite/:inviteUserId',
+    },
+  },
+};
 
 function LoadingScreen() {
   return (
@@ -21,7 +33,6 @@ function LoadingScreen() {
 }
 
 export default function App() {
-  // null = not yet determined, object = logged in, false = logged out
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [splashDone, setSplashDone] = useState(false);
@@ -30,7 +41,6 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser ?? false);
       setAuthChecked(true);
-      // Already logged in — skip splash entirely
       if (firebaseUser) {
         setSplashDone(true);
       }
@@ -38,7 +48,6 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Waiting for Firebase to resolve the initial auth state
   if (!authChecked) {
     return (
       <SafeAreaProvider>
@@ -48,7 +57,6 @@ export default function App() {
     );
   }
 
-  // New / logged-out user — show splash first
   if (!splashDone) {
     return (
       <SafeAreaProvider>
@@ -63,7 +71,7 @@ export default function App() {
       <MicProvider>
         <StatusBar style="light" />
         {user && <MicBar />}
-        <NavigationContainer>
+        <NavigationContainer ref={navigationRef} linking={user ? linking : undefined}>
           {user ? <TabNavigator /> : <AuthNavigator />}
         </NavigationContainer>
       </MicProvider>

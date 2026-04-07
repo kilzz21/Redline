@@ -2,6 +2,7 @@
   "expo": {
     "name": "Redline",
     "slug": "redline",
+    "scheme": "redline",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -15,8 +16,11 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Redline needs microphone access for crew radio"
-      }
+        "NSMicrophoneUsageDescription": "Redline needs microphone access for crew radio",
+        "NSPhotoLibraryUsageDescription": "Redline needs photo library access to set your profile picture",
+        "NSContactsUsageDescription": "Redline uses your contacts to find friends already on the app"
+      },
+      "bundleIdentifier": "com.anonymous.redline"
     },
     "android": {
       "adaptiveIcon": {

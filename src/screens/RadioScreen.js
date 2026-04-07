@@ -1,27 +1,60 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
-  TouchableOpacity, Animated, Alert,
+  TouchableOpacity, Animated, Alert, ActivityIndicator, Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   createAgoraRtcEngine,
   ChannelProfileType,
   ClientRoleType,
 } from 'react-native-agora';
-import { AGORA_APP_ID, AGORA_TOKEN } from '../config/agora';
+import { httpsCallable } from 'firebase/functions';
+import { onAuthStateChanged } from 'firebase/auth';
+import {
+  collection, doc, onSnapshot, setDoc, deleteDoc, serverTimestamp,
+} from 'firebase/firestore';
+import { auth, db, functions } from '../config/firebase';
+import { AGORA_APP_ID } from '../config/agora';
 import { useMic } from '../context/MicContext';
+import { useCrews } from '../hooks/useCrews';
+import { consumeJoinRequest } from '../utils/radioJoinRequest';
 
 const ORANGE = '#f97316';
 
-// ─── Channel definitions ──────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const CHANNELS = [
-  { id: 'sunday-cruise-crew', name: 'sunday cruise crew', active: true },
-  { id: 'so-cal-meets', name: 'so cal meets', active: false },
-  { id: 'track-day-squad', name: 'track day squad', active: false },
-];
+function getInitials(name) {
+  if (!name) return '??';
+  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
+function getMemberColor(uid) {
+  const COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
+  const n = (uid || 'x').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+  return COLORS[n % COLORS.length];
+}
+
+function isOnline(profile) {
+  const last = profile?.lastSeen?.toMillis?.() ?? 0;
+  return Date.now() - last < 2 * 60 * 1000;
+}
+
+// ─── Auth guard ───────────────────────────────────────────────────────────────
+
+function waitForAuth() {
+  return new Promise((resolve, reject) => {
+    if (auth.currentUser) { resolve(auth.currentUser); return; }
+    const unsub = onAuthStateChanged(auth, (user) => {
+      unsub();
+      if (user) resolve(user);
+      else reject(new Error('Not authenticated'));
+    });
+    setTimeout(() => { unsub(); reject(new Error('Auth state did not resolve within 5 s')); }, 5000);
+  });
+}
 
 // ─── Animated waveform ────────────────────────────────────────────────────────
 
@@ -29,7 +62,6 @@ const BAR_HEIGHTS = [8, 14, 10, 16, 8];
 
 function Waveform() {
   const anims = useRef(BAR_HEIGHTS.map((h) => new Animated.Value(h))).current;
-
   useEffect(() => {
     const loops = anims.map((anim, i) => {
       const target = [14, 8, 16, 8, 14][i];
@@ -43,7 +75,6 @@ function Waveform() {
     loops.forEach((l) => l.start());
     return () => loops.forEach((l) => l.stop());
   }, [anims]);
-
   return (
     <View style={styles.waveform}>
       {anims.map((anim, i) => (
@@ -53,20 +84,63 @@ function Waveform() {
   );
 }
 
+// ─── Avatar ───────────────────────────────────────────────────────────────────
+
+function Avatar({ photoURL, name, uid, size = 32, dimmed = false }) {
+  const color = getMemberColor(uid);
+  const opacity = dimmed ? 0.35 : 1;
+  if (photoURL) {
+    return (
+      <Image source={{ uri: photoURL }} style={{ width: size, height: size, borderRadius: size / 2, opacity }} />
+    );
+  }
+  return (
+    <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color, alignItems: 'center', justifyContent: 'center', opacity }}>
+      <Text style={{ color: '#fff', fontSize: size * 0.33, fontWeight: '700' }}>{getInitials(name)}</Text>
+    </View>
+  );
+}
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function RadioScreen() {
-  const { setMicOn } = useMic();
+  const { setMicOn, setChannelName, muteCallbackRef } = useMic();
+  const uid = auth.currentUser?.uid;
+  const crews = useCrews();
 
   const [selectedMode, setSelectedMode] = useState('hold');
-  const [joinedChannel, setJoinedChannel] = useState(null); // channel id string
+  const [joinedChannel, setJoinedChannel] = useState(null);
+  const [tokenLoading, setTokenLoading] = useState(false);
   const [localUid, setLocalUid] = useState(0);
   const [activeSpeakerUid, setActiveSpeakerUid] = useState(null);
   const [remoteUsers, setRemoteUsers] = useState(new Set());
-  const [isMicOn, setIsMicOn] = useState(false); // open mic toggle state
-  const [talking, setTalking] = useState(false);  // hold-to-talk press state
+  const [isMicOn, setIsMicOn] = useState(false);
+  const [talking, setTalking] = useState(false);
+  const [presenceUids, setPresenceUids] = useState(new Set());
 
   const engineRef = useRef(null);
+  const refreshTimerRef = useRef(null);
+  const joinedChannelRef = useRef(null);
+  const joinChannelCallbackRef = useRef(null);
+
+  // Map crew IDs to their channel objects
+  const crewChannels = crews.map((crew) => ({
+    id: crew.id,
+    name: crew.name,
+    memberProfiles: crew.memberProfiles || [],
+    onlineCount: (crew.memberProfiles || []).filter(isOnline).length,
+  }));
+
+  // ── Presence for current channel ──────────────────────────────────────────
+
+  useEffect(() => {
+    if (!joinedChannel) { setPresenceUids(new Set()); return; }
+    const unsub = onSnapshot(
+      collection(db, 'crews', joinedChannel, 'presence'),
+      (snap) => setPresenceUids(new Set(snap.docs.map((d) => d.id)))
+    );
+    return unsub;
+  }, [joinedChannel]);
 
   // ── Agora engine lifecycle ─────────────────────────────────────────────────
 
@@ -78,103 +152,161 @@ export default function RadioScreen() {
       appId: AGORA_APP_ID,
       channelProfile: ChannelProfileType.ChannelProfileCommunication,
     });
-
     engine.enableAudio();
-    // Start muted — user controls when to speak
     engine.muteLocalAudioStream(true);
-
-    // Enable volume indication so onActiveSpeaker fires (~500 ms interval)
     engine.enableAudioVolumeIndication(500, 3, false);
 
     const eventHandler = {
       onJoinChannelSuccess: (connection, elapsed) => {
-        console.log('Agora: joined', connection.channelId, 'uid', connection.localUid);
+        console.log('[Agora] Joined', connection.channelId, 'uid', connection.localUid);
         setLocalUid(connection.localUid);
       },
+      onUserJoined: (connection, remoteUid) => {
+        setRemoteUsers((prev) => { const n = new Set(prev); n.add(remoteUid); return n; });
+      },
       onUserOffline: (connection, remoteUid) => {
-        setRemoteUsers((prev) => {
-          const next = new Set(prev);
-          next.delete(remoteUid);
-          return next;
-        });
+        setRemoteUsers((prev) => { const n = new Set(prev); n.delete(remoteUid); return n; });
         setActiveSpeakerUid((prev) => (prev === remoteUid ? null : prev));
       },
-      onActiveSpeaker: (connection, uid) => {
-        setActiveSpeakerUid(uid || null);
+      onActiveSpeaker: (connection, speakerUid) => setActiveSpeakerUid(speakerUid || null),
+      onUserMuteAudio: (connection, remoteUid, muted) => {
+        if (muted) setActiveSpeakerUid((prev) => (prev === remoteUid ? null : prev));
       },
-      onUserMuteAudio: (connection, uid, muted) => {
-        if (muted) {
-          setActiveSpeakerUid((prev) => (prev === uid ? null : prev));
-        }
-      },
-      onUserEnableAudio: (connection, uid, enabled) => {
+      onUserEnableAudio: (connection, remoteUid, enabled) => {
         setRemoteUsers((prev) => {
-          const next = new Set(prev);
-          enabled ? next.add(uid) : next.delete(uid);
-          return next;
+          const n = new Set(prev);
+          enabled ? n.add(remoteUid) : n.delete(remoteUid);
+          return n;
         });
-        if (!enabled) {
-          setActiveSpeakerUid((prev) => (prev === uid ? null : prev));
+        if (!enabled) setActiveSpeakerUid((prev) => (prev === remoteUid ? null : prev));
+      },
+      onTokenPrivilegeWillExpire: async () => {
+        const ch = joinedChannelRef.current;
+        if (!ch) return;
+        try {
+          const newToken = await fetchToken(ch);
+          engineRef.current?.renewToken(newToken);
+          console.log('[Agora] Token renewed for', ch);
+        } catch (e) {
+          console.warn('[Agora] Token renewal failed:', e.message);
         }
       },
-      onError: (err, msg) => {
-        console.warn('Agora error', err, msg);
-      },
+      onError: (err, msg) => console.warn('[Agora] Error', err, msg),
     };
 
     engine.registerEventHandler(eventHandler);
 
+    // Register mute callback so MicBar can trigger real Agora mute
+    muteCallbackRef.current = (on) => {
+      engine.muteLocalAudioStream(!on);
+    };
+
     return () => {
+      muteCallbackRef.current = null;
+      clearTimeout(refreshTimerRef.current);
       engine.unregisterEventHandler(eventHandler);
       engine.muteLocalAudioStream(true);
       engine.leaveChannel();
       engine.release();
       engineRef.current = null;
       setMicOn(false);
+      setChannelName(null);
     };
-  }, [setMicOn]);
+  }, [setMicOn, setChannelName, muteCallbackRef]);
+
+  // ── Token fetch ───────────────────────────────────────────────────────────
+
+  const fetchToken = async (channelName) => {
+    const user = await waitForAuth();
+    console.log('[Agora] auth.currentUser before fetchToken:', user.uid);
+    await user.getIdToken();
+    const getAgoraToken = httpsCallable(functions, 'getAgoraToken');
+    const result = await getAgoraToken({ channelName, uid: 0 });
+    console.log('[Agora] Token fetched for', channelName, ':', result.data.token.slice(0, 20) + '…');
+    return result.data.token;
+  };
 
   // ── Join / leave ──────────────────────────────────────────────────────────
 
   const joinChannel = async (channelId) => {
     if (joinedChannel === channelId) return;
 
-    // Leave existing channel first
+    // Leave current channel + clean up presence
     if (joinedChannel) {
+      clearTimeout(refreshTimerRef.current);
+      if (uid) await deleteDoc(doc(db, 'crews', joinedChannel, 'presence', uid)).catch(() => {});
       engineRef.current?.leaveChannel();
       setMicOn(false);
       setIsMicOn(false);
       setTalking(false);
     }
 
-    // Request mic permission via expo-av
     const { granted } = await Audio.requestPermissionsAsync();
     if (!granted) {
-      Alert.alert(
-        'Microphone access needed',
-        'Enable microphone in Settings to use crew radio.'
-      );
+      Alert.alert('Microphone access needed', 'Enable microphone in Settings to use crew radio.');
       return;
     }
 
-    engineRef.current?.setClientRole(ClientRoleType.ClientRoleBroadcaster);
-    engineRef.current?.joinChannel(AGORA_TOKEN ?? '', channelId, 0, {
-      clientRoleType: ClientRoleType.ClientRoleBroadcaster,
-      publishMicrophoneTrack: true,
-      autoSubscribeAudio: true,
-    });
+    setTokenLoading(true);
+    try {
+      const token = await fetchToken(channelId);
 
-    // Start muted regardless of mode — user activates manually
-    engineRef.current?.muteLocalAudioStream(true);
-    setJoinedChannel(channelId);
-    setActiveSpeakerUid(null);
-    setRemoteUsers(new Set());
+      engineRef.current?.setClientRole(ClientRoleType.ClientRoleBroadcaster);
+      engineRef.current?.joinChannel(token, channelId, 0, {
+        clientRoleType: ClientRoleType.ClientRoleBroadcaster,
+        publishMicrophoneTrack: true,
+        autoSubscribeAudio: true,
+      });
+      engineRef.current?.muteLocalAudioStream(true);
+
+      const crewName = crewChannels.find((c) => c.id === channelId)?.name ?? null;
+      setJoinedChannel(channelId);
+      joinedChannelRef.current = channelId;
+      setChannelName(crewName);
+      setActiveSpeakerUid(null);
+      setRemoteUsers(new Set());
+
+      // Write presence
+      if (uid) {
+        await setDoc(doc(db, 'crews', channelId, 'presence', uid), {
+          uid,
+          joinedAt: serverTimestamp(),
+        });
+      }
+
+      // Auto-refresh token at 55 minutes
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(async () => {
+        try {
+          const newToken = await fetchToken(channelId);
+          engineRef.current?.renewToken(newToken);
+          console.log('[Agora] Token auto-refreshed at 55m for', channelId);
+        } catch (e) {
+          console.warn('[Agora] Auto-refresh failed:', e.message);
+        }
+      }, 55 * 60 * 1000);
+
+    } catch (e) {
+      Alert.alert('Could not join channel', e.message);
+      console.error('[Agora] joinChannel failed:', e);
+    } finally {
+      setTokenLoading(false);
+    }
   };
 
-  const leaveChannel = () => {
+  // Keep ref current so useFocusEffect can call latest version
+  joinChannelCallbackRef.current = joinChannel;
+
+  const leaveChannel = async () => {
+    clearTimeout(refreshTimerRef.current);
+    if (uid && joinedChannel) {
+      await deleteDoc(doc(db, 'crews', joinedChannel, 'presence', uid)).catch(() => {});
+    }
     engineRef.current?.muteLocalAudioStream(true);
     engineRef.current?.leaveChannel();
     setJoinedChannel(null);
+    joinedChannelRef.current = null;
+    setChannelName(null);
     setActiveSpeakerUid(null);
     setRemoteUsers(new Set());
     setIsMicOn(false);
@@ -182,7 +314,18 @@ export default function RadioScreen() {
     setMicOn(false);
   };
 
-  // ── Hold-to-talk handlers ─────────────────────────────────────────────────
+  // ── Auto-join from CrewScreen ─────────────────────────────────────────────
+
+  useFocusEffect(
+    useCallback(() => {
+      const pendingCh = consumeJoinRequest();
+      if (pendingCh && joinChannelCallbackRef.current) {
+        joinChannelCallbackRef.current(pendingCh);
+      }
+    }, [])
+  );
+
+  // ── Hold-to-talk ──────────────────────────────────────────────────────────
 
   const onPressInHold = () => {
     if (!joinedChannel) return;
@@ -197,8 +340,6 @@ export default function RadioScreen() {
     setMicOn(false);
   };
 
-  // ── Open-mic toggle ───────────────────────────────────────────────────────
-
   const toggleOpenMic = () => {
     if (!joinedChannel) return;
     const next = !isMicOn;
@@ -211,7 +352,10 @@ export default function RadioScreen() {
 
   const isLocalSpeaking = activeSpeakerUid !== null && activeSpeakerUid === localUid;
   const isRemoteSpeaking = activeSpeakerUid !== null && activeSpeakerUid !== localUid;
-  const liveCount = (joinedChannel ? 1 : 0) + remoteUsers.size;
+  // Use Firestore presence for accurate count (presenceUids already includes current user)
+  const liveCount = joinedChannel ? Math.max(presenceUids.size, 1) : 0;
+
+  const joinedCrew = joinedChannel ? crewChannels.find((c) => c.id === joinedChannel) : null;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -228,30 +372,72 @@ export default function RadioScreen() {
         {joinedChannel && (
           <View style={styles.inChannelPill}>
             <View style={styles.inChannelDot} />
-            <Text style={styles.inChannelText}>in channel</Text>
+            <Text style={styles.inChannelText}>{joinedCrew?.name ?? 'channel'}</Text>
           </View>
         )}
       </View>
 
-      {/* ── Channels ───────────────────────────────────── */}
-      <Text style={styles.sectionLabel}>channels</Text>
-      {CHANNELS.map((ch) => {
-        const isJoined = joinedChannel === ch.id;
-        return (
-          <TouchableOpacity
-            key={ch.id}
-            style={[styles.channelCard, isJoined && styles.channelCardActive]}
-            onPress={() => isJoined ? leaveChannel() : joinChannel(ch.id)}
-            activeOpacity={0.75}
-          >
-            <View style={[styles.channelDot, { backgroundColor: isJoined ? ORANGE : '#444' }]} />
-            <Text style={styles.channelName}>{ch.name}</Text>
-            <Text style={styles.channelCount}>
-              {isJoined ? `${liveCount} live` : '0 live'}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
+      {/* ── Crew channels ──────────────────────────────── */}
+      <Text style={styles.sectionLabel}>crew channels</Text>
+
+      {crewChannels.length === 0 ? (
+        <View style={styles.emptyChannels}>
+          <Text style={styles.emptyChannelsTitle}>no channels yet</Text>
+          <Text style={styles.emptyChannelsSub}>
+            create a crew in the Crew tab to get a private voice channel
+          </Text>
+        </View>
+      ) : (
+        crewChannels.map((ch) => {
+          const isJoined = joinedChannel === ch.id;
+          return (
+            <TouchableOpacity
+              key={ch.id}
+              style={[styles.channelCard, isJoined && styles.channelCardActive]}
+              onPress={() => isJoined ? leaveChannel() : joinChannel(ch.id)}
+              activeOpacity={0.75}
+              disabled={tokenLoading && !isJoined}
+            >
+              <View style={[styles.channelDot, { backgroundColor: ch.onlineCount > 0 ? '#22c55e' : '#333' }]} />
+              <View style={styles.channelMeta}>
+                <Text style={styles.channelName}>{ch.name}</Text>
+                <Text style={styles.channelSub}>
+                  {ch.memberProfiles.length} member{ch.memberProfiles.length !== 1 ? 's' : ''}
+                  {ch.onlineCount > 0 ? ` · ${ch.onlineCount} online` : ''}
+                </Text>
+              </View>
+              {tokenLoading && !isJoined ? (
+                <ActivityIndicator size="small" color={ORANGE} />
+              ) : (
+                <Text style={[styles.channelAction, isJoined && styles.channelActionActive]}>
+                  {isJoined ? `${liveCount} live · leave` : 'join'}
+                </Text>
+              )}
+            </TouchableOpacity>
+          );
+        })
+      )}
+
+      {/* ── Members in channel ─────────────────────────── */}
+      {joinedCrew && (
+        <View style={styles.channelMembersRow}>
+          {joinedCrew.memberProfiles.map((p) => {
+            const inChannel = presenceUids.has(p.id);
+            return (
+              <View key={p.id} style={styles.channelMemberWrap}>
+                <Avatar
+                  photoURL={p.photoURL}
+                  name={p.name}
+                  uid={p.id}
+                  size={34}
+                  dimmed={!inChannel}
+                />
+                {inChannel && <View style={styles.inChannelIndicator} />}
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {/* ── Divider ────────────────────────────────────── */}
       <View style={styles.divider} />
@@ -259,9 +445,7 @@ export default function RadioScreen() {
       {/* ── Now talking ────────────────────────────────── */}
       <View style={styles.talkingRow}>
         <View style={styles.talkingAvatar}>
-          <Text style={styles.talkingInitials}>
-            {isLocalSpeaking ? 'ME' : 'JD'}
-          </Text>
+          <Text style={styles.talkingInitials}>{isLocalSpeaking ? 'ME' : '??'}</Text>
         </View>
         <Text style={styles.talkingText}>
           {isLocalSpeaking
@@ -270,9 +454,9 @@ export default function RadioScreen() {
             ? 'Crew member is talking...'
             : joinedChannel
             ? 'no one talking'
-            : 'Jake D. is talking...'}
+            : 'join a channel to start'}
         </Text>
-        {(isLocalSpeaking || isRemoteSpeaking || !joinedChannel) && <Waveform />}
+        {(isLocalSpeaking || isRemoteSpeaking) && <Waveform />}
       </View>
 
       {/* ── Mode toggle ────────────────────────────────── */}
@@ -283,7 +467,6 @@ export default function RadioScreen() {
             style={[styles.modeOption, selectedMode === mode && styles.modeOptionActive]}
             onPress={() => {
               setSelectedMode(mode);
-              // Reset mic state when switching modes
               engineRef.current?.muteLocalAudioStream(true);
               setIsMicOn(false);
               setTalking(false);
@@ -327,19 +510,15 @@ export default function RadioScreen() {
           >
             <Ionicons name="mic" size={28} color={isMicOn ? '#fff' : joinedChannel ? '#555' : '#333'} />
           </TouchableOpacity>
-
           <View style={[styles.micBadge, isMicOn ? styles.micBadgeOn : styles.micBadgeOff]}>
             <Text style={[styles.micBadgeText, isMicOn ? styles.micBadgeTextOn : styles.micBadgeTextOff]}>
               {!joinedChannel ? 'join a channel' : isMicOn ? 'live' : 'mic off'}
             </Text>
           </View>
-
           <Text style={styles.micHint}>
             {!joinedChannel
               ? 'tap a channel above to join'
-              : isMicOn
-              ? 'tap to mute your mic'
-              : 'tap to go live to your crew'}
+              : isMicOn ? 'tap to mute your mic' : 'tap to go live to your crew'}
           </Text>
         </View>
       )}
@@ -354,7 +533,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#111' },
   content: { padding: 16, paddingBottom: 32 },
 
-  // Header
   header: {
     flexDirection: 'row', alignItems: 'center',
     justifyContent: 'space-between', marginBottom: 18,
@@ -373,20 +551,41 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5, marginBottom: 8,
   },
 
-  // Channel cards
+  emptyChannels: {
+    backgroundColor: '#1a1a1a', borderRadius: 8, borderWidth: 0.5,
+    borderColor: '#2a2a2a', padding: 16, alignItems: 'center', marginBottom: 6,
+  },
+  emptyChannelsTitle: { color: '#555', fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  emptyChannelsSub: { color: '#333', fontSize: 11, textAlign: 'center', lineHeight: 16 },
+
   channelCard: {
     backgroundColor: '#1a1a1a', borderRadius: 8, borderWidth: 0.5,
-    borderColor: '#2a2a2a', paddingVertical: 10, paddingHorizontal: 12,
-    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6,
+    borderColor: '#2a2a2a', paddingVertical: 12, paddingHorizontal: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6,
   },
   channelCardActive: { borderColor: ORANGE },
-  channelDot: { width: 8, height: 8, borderRadius: 4 },
-  channelName: { flex: 1, color: '#fff', fontSize: 11 },
-  channelCount: { color: '#555', fontSize: 10 },
+  channelDot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  channelMeta: { flex: 1 },
+  channelName: { color: '#fff', fontSize: 13, fontWeight: '500' },
+  channelSub: { color: '#555', fontSize: 10, marginTop: 2 },
+  channelAction: { color: '#555', fontSize: 11 },
+  channelActionActive: { color: ORANGE, fontWeight: '600' },
+
+  // Channel member presence row
+  channelMembersRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 8,
+    backgroundColor: '#1a1a1a', borderRadius: 8, borderWidth: 0.5,
+    borderColor: '#2a2a2a', padding: 10, marginBottom: 6,
+  },
+  channelMemberWrap: { alignItems: 'center', position: 'relative' },
+  inChannelIndicator: {
+    position: 'absolute', bottom: 0, right: 0,
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: '#22c55e', borderWidth: 1.5, borderColor: '#1a1a1a',
+  },
 
   divider: { height: 0.5, backgroundColor: '#1e1e1e', marginVertical: 12 },
 
-  // Now talking
   talkingRow: {
     backgroundColor: '#1a1a1a', borderRadius: 8,
     paddingVertical: 8, paddingHorizontal: 12,
@@ -398,12 +597,9 @@ const styles = StyleSheet.create({
   },
   talkingInitials: { color: '#3b82f6', fontSize: 8, fontWeight: '500' },
   talkingText: { flex: 1, color: '#fff', fontSize: 11 },
-
-  // Waveform
   waveform: { flexDirection: 'row', alignItems: 'center', gap: 2, height: 20 },
   waveBar: { width: 3, borderRadius: 2, backgroundColor: ORANGE },
 
-  // Mode toggle
   modeToggle: {
     flexDirection: 'row', backgroundColor: '#1a1a1a',
     borderRadius: 20, padding: 3, marginVertical: 16,
@@ -414,7 +610,6 @@ const styles = StyleSheet.create({
   modeTextActive: { color: '#fff' },
   modeTextInactive: { color: '#666' },
 
-  // Hold to talk
   holdBtn: {
     backgroundColor: '#1e1e1e', borderRadius: 12, paddingVertical: 14,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -424,7 +619,6 @@ const styles = StyleSheet.create({
   holdBtnTextDisabled: { color: '#444' },
   holdHint: { color: '#444', fontSize: 9, textAlign: 'center', marginTop: 6 },
 
-  // Open mic
   openMicWrap: { alignItems: 'center', paddingVertical: 8, gap: 14 },
   micCircle: {
     width: 72, height: 72, borderRadius: 36, borderWidth: 2,

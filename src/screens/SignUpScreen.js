@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  ScrollView, KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
+  ScrollView, KeyboardAvoidingView, Platform, Alert,
+  ActivityIndicator, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as ImagePicker from 'expo-image-picker';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
+import { uploadProfilePicture } from '../utils/uploadProfilePicture';
 
 const ORANGE = '#f97316';
 
@@ -30,17 +33,50 @@ export default function SignUpScreen({ navigation }) {
   const insets = useSafeAreaInsets();
 
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [location, setLocation] = useState('');
   const [year, setYear] = useState('');
   const [make, setMake] = useState('');
   const [model, setModel] = useState('');
   const [color, setColor] = useState('');
+  const [profilePicUri, setProfilePicUri] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  const handlePhoneChange = (text) => {
+    const digits = text.replace(/\D/g, '').slice(0, 10);
+    if (digits.length <= 3) { setPhone(digits); return; }
+    if (digits.length <= 6) { setPhone(`(${digits.slice(0, 3)}) ${digits.slice(3)}`); return; }
+    setPhone(`(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`);
+  };
+
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Allow photo access to set a profile picture.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 1,
+    });
+    if (!result.canceled) {
+      setProfilePicUri(result.assets[0].uri);
+    }
+  };
+
   const handleSignUp = async () => {
-    if (!name || !email || !password) {
-      Alert.alert('Missing fields', 'Please fill in your name, email, and password.');
+    if (!name || !username || !email || !password) {
+      Alert.alert('Missing fields', 'Please fill in your name, username, email, and password.');
+      return;
+    }
+    const cleanUsername = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (cleanUsername.length < 3) {
+      Alert.alert('Invalid username', 'Username must be at least 3 characters (letters, numbers, underscores).');
       return;
     }
 
@@ -48,13 +84,28 @@ export default function SignUpScreen({ navigation }) {
     try {
       const { user } = await createUserWithEmailAndPassword(auth, email, password);
 
+      let photoURL = null;
+      if (profilePicUri) {
+        try {
+          photoURL = await uploadProfilePicture(user.uid, profilePicUri);
+        } catch (e) {
+          console.warn('Profile picture upload failed:', e.message);
+        }
+      }
+
+      const phoneDigits = phone.replace(/\D/g, '');
       await setDoc(doc(db, 'users', user.uid), {
         name,
+        username: cleanUsername,
         email,
+        phoneNumber: phone || null,
+        phoneNumberNormalized: phoneDigits || null,
+        location: location.trim() || null,
         car: { year, make, model, color },
+        photoURL,
         createdAt: serverTimestamp(),
       });
-      // onAuthStateChanged in App.js will detect the new user and navigate to main app
+      // onAuthStateChanged in App.js handles navigation
     } catch (error) {
       Alert.alert('Sign up failed', error.message);
     } finally {
@@ -84,8 +135,28 @@ export default function SignUpScreen({ navigation }) {
         <Text style={styles.logoSmall}>REDLINE</Text>
         <Text style={styles.title}>create account</Text>
 
+        {/* Profile picture picker */}
+        <TouchableOpacity style={styles.pickerWrap} onPress={pickImage} activeOpacity={0.8}>
+          {profilePicUri ? (
+            <Image source={{ uri: profilePicUri }} style={styles.pickerImage} />
+          ) : (
+            <View style={styles.pickerPlaceholder}>
+              <Text style={styles.pickerPlaceholderText}>tap to add{'\n'}photo</Text>
+            </View>
+          )}
+          <View style={styles.pickerBadge}>
+            <Text style={styles.pickerBadgeText}>+</Text>
+          </View>
+        </TouchableOpacity>
+
         <Text style={styles.sectionLabel}>your details</Text>
         <Field placeholder="full name" value={name} onChangeText={setName} />
+        <Field
+          placeholder="username  (e.g. jake_speed)"
+          value={username}
+          onChangeText={setUsername}
+          autoCapitalize="none"
+        />
         <Field
           placeholder="email"
           value={email}
@@ -94,11 +165,23 @@ export default function SignUpScreen({ navigation }) {
           autoCapitalize="none"
         />
         <Field
+          placeholder="phone  (e.g. (555) 555-5555)"
+          value={phone}
+          onChangeText={handlePhoneChange}
+          keyboardType="phone-pad"
+          autoCapitalize="none"
+        />
+        <Field
           placeholder="password"
           value={password}
           onChangeText={setPassword}
           secureTextEntry
           autoCapitalize="none"
+        />
+        <Field
+          placeholder="city, state  (e.g. Los Angeles, CA)"
+          value={location}
+          onChangeText={setLocation}
         />
 
         <Text style={styles.sectionLabel}>your car</Text>
@@ -167,8 +250,53 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 26,
     fontWeight: '700',
+    marginBottom: 24,
+  },
+
+  // Profile picture picker
+  pickerWrap: {
+    alignSelf: 'center',
     marginBottom: 28,
   },
+  pickerImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  pickerPlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerPlaceholderText: {
+    color: '#444',
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  pickerBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: ORANGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerBadgeText: {
+    color: '#fff',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+
   sectionLabel: {
     color: '#444',
     fontSize: 11,
