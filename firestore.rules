@@ -29,13 +29,17 @@ service cloud.firestore {
     }
 
     // ── Crew Invites ───────────────────────────────────────────────────────────
-    // Invitations to join a crew — require acceptance before membership is granted.
+    // One invite per person per crew: document ID is always "{crewId}_{toUid}".
+    // This gives a natural uniqueness guarantee — a second write to the same
+    // crewId+toUid combo is an update on the same doc, not a new create.
     match /crewInvites/{inviteId} {
       allow read: if request.auth != null &&
                      (request.auth.uid == resource.data.fromUid ||
                       request.auth.uid == resource.data.toUid);
+      // Enforce deterministic ID pattern and that the sender is authenticated.
       allow create: if request.auth != null &&
-                       request.auth.uid == request.resource.data.fromUid;
+                       request.auth.uid == request.resource.data.fromUid &&
+                       inviteId == request.resource.data.crewId + '_' + request.resource.data.toUid;
       allow update: if request.auth != null &&
                        (request.auth.uid == resource.data.toUid ||
                         request.auth.uid == resource.data.fromUid);

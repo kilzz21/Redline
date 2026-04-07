@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc,
+  collection, query, where, onSnapshot, addDoc, setDoc, getDoc, updateDoc, deleteDoc,
   doc, documentId, serverTimestamp, getDocs, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
 import * as Contacts from 'expo-contacts';
@@ -28,6 +28,30 @@ function normalizePhone(raw) {
   if (!raw) return '';
   return raw.replace(/\D/g, '');
 }
+
+// Deterministic invite doc ID — enforces one invite per person per crew.
+function crewInviteDocId(crewId, toUid) {
+  return `${crewId}_${toUid}`;
+}
+
+// Returns true if sent, false if a pending invite already exists.
+async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, memberCount }) {
+  const ref = doc(db, 'crewInvites', crewInviteDocId(crewId, toUid));
+  const snap = await getDoc(ref);
+  if (snap.exists() && snap.data().status === 'pending') return false;
+  await setDoc(ref, {
+    crewId,
+    crewName,
+    fromUid,
+    fromName,
+    toUid,
+    memberCount,
+    status: 'pending',
+    createdAt: serverTimestamp(),
+  });
+  return true;
+}
+
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -184,7 +208,7 @@ function CrewCard({ crew, uid, onPress, onLongPress, onOpenRadio, index }) {
 
 // ─── Create Crew Modal ────────────────────────────────────────────────────────
 
-function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCreated }) {
+function CreateCrewModal({ visible, connections, uid, myProfile, sentCrewInviteUids, onClose, onCreated }) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [selected, setSelected] = useState(new Set());
@@ -209,21 +233,20 @@ function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCrea
         members: [uid],
         createdAt: serverTimestamp(),
       });
-      // Send crew invites to each selected member
       const fromName = myProfile?.name || auth.currentUser?.email || 'Unknown';
-      await Promise.all([...selected].map((toUid) =>
-        addDoc(collection(db, 'crewInvites'), {
+      // Only invite members that don't already have a pending invite
+      const eligible = [...selected].filter((toUid) => !sentCrewInviteUids?.has(toUid));
+      await Promise.all(eligible.map((toUid) =>
+        sendCrewInviteDoc({
           crewId: ref.id,
           crewName,
           fromUid: uid,
           fromName,
           toUid,
           memberCount: selected.size + 1,
-          status: 'pending',
-          createdAt: serverTimestamp(),
         })
       ));
-      onCreated(ref.id, selected.size);
+      onCreated(ref.id, eligible.length);
       setName('');
       setSelected(new Set());
       onClose();
@@ -276,15 +299,32 @@ function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCrea
           {connections.length > 0 && (
             <>
               <Text style={styles.modalSectionLabel}>add members</Text>
-              {connections.map((c) => (
-                <Checkbox
-                  key={c.id}
-                  checked={selected.has(c.id)}
-                  label={c.name || c.email || 'Unknown'}
-                  subLabel={formatCarString(c.car) || c.location}
-                  onToggle={() => toggle(c.id)}
-                />
-              ))}
+              {connections.map((c) => {
+                const alreadyInvited = sentCrewInviteUids?.has(c.id);
+                if (alreadyInvited) {
+                  return (
+                    <View key={c.id} style={styles.checkRow}>
+                      <View style={[styles.checkBox, { opacity: 0.3 }]} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.checkLabel, { opacity: 0.4 }]}>{c.name || c.email || 'Unknown'}</Text>
+                        {(formatCarString(c.car) || c.location)
+                          ? <Text style={styles.checkSubLabel}>{formatCarString(c.car) || c.location}</Text>
+                          : null}
+                      </View>
+                      <Text style={styles.alreadyInvitedLabel}>already invited</Text>
+                    </View>
+                  );
+                }
+                return (
+                  <Checkbox
+                    key={c.id}
+                    checked={selected.has(c.id)}
+                    label={c.name || c.email || 'Unknown'}
+                    subLabel={formatCarString(c.car) || c.location}
+                    onToggle={() => toggle(c.id)}
+                  />
+                );
+              })}
             </>
           )}
 
@@ -301,7 +341,7 @@ function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCrea
 
 // ─── Crew Detail Modal ────────────────────────────────────────────────────────
 
-function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, onInvitesSent }) {
+function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap, visible, onClose, onInvitesSent }) {
   const insets = useSafeAreaInsets();
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedToAdd, setSelectedToAdd] = useState(new Set());
@@ -310,7 +350,10 @@ function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, 
   const isCreator = crew?.createdBy === uid;
   const profiles = crew?.memberProfiles || [];
   const currentMemberIds = new Set(crew?.members || []);
+  // Connections not yet in the crew
   const eligibleToAdd = connections.filter((c) => !currentMemberIds.has(c.id));
+  // Subset that already have a pending invite for this specific crew
+  const alreadyInvitedForCrew = crew ? (sentCrewInviteMap?.get(crew.id) ?? new Set()) : new Set();
 
   const toggleAdd = useCallback((id) => {
     setSelectedToAdd((prev) => {
@@ -325,19 +368,19 @@ function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, 
     setAddLoading(true);
     try {
       const fromName = myProfile?.name || auth.currentUser?.email || 'Unknown';
-      await Promise.all([...selectedToAdd].map((toUid) =>
-        addDoc(collection(db, 'crewInvites'), {
+      let sent = 0;
+      await Promise.all([...selectedToAdd].map(async (toUid) => {
+        const ok = await sendCrewInviteDoc({
           crewId: crew.id,
           crewName: crew.name,
           fromUid: uid,
           fromName,
           toUid,
           memberCount: (crew.members?.length || 1) + 1,
-          status: 'pending',
-          createdAt: serverTimestamp(),
-        })
-      ));
-      onInvitesSent?.(selectedToAdd.size);
+        });
+        if (ok) sent++;
+      }));
+      onInvitesSent?.(sent);
       setSelectedToAdd(new Set());
       setAddingMembers(false);
     } catch (e) {
@@ -477,15 +520,31 @@ function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, 
               {eligibleToAdd.length === 0 ? (
                 <Text style={styles.modalEmpty}>all your connections are already in this crew</Text>
               ) : (
-                eligibleToAdd.map((c) => (
-                  <Checkbox
-                    key={c.id}
-                    checked={selectedToAdd.has(c.id)}
-                    label={c.name || 'Unknown'}
-                    subLabel={formatCarString(c.car) || c.location}
-                    onToggle={() => toggleAdd(c.id)}
-                  />
-                ))
+                eligibleToAdd.map((c) => {
+                  if (alreadyInvitedForCrew.has(c.id)) {
+                    return (
+                      <View key={c.id} style={styles.checkRow}>
+                        <View style={[styles.checkBox, { opacity: 0.3 }]} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.checkLabel, { opacity: 0.4 }]}>{c.name || 'Unknown'}</Text>
+                          {(formatCarString(c.car) || c.location)
+                            ? <Text style={styles.checkSubLabel}>{formatCarString(c.car) || c.location}</Text>
+                            : null}
+                        </View>
+                        <Text style={styles.alreadyInvitedLabel}>already invited</Text>
+                      </View>
+                    );
+                  }
+                  return (
+                    <Checkbox
+                      key={c.id}
+                      checked={selectedToAdd.has(c.id)}
+                      label={c.name || 'Unknown'}
+                      subLabel={formatCarString(c.car) || c.location}
+                      onToggle={() => toggleAdd(c.id)}
+                    />
+                  );
+                })
               )}
             </>
           )}
@@ -497,7 +556,7 @@ function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, 
 
 // ─── Add to Crew Modal ───────────────────────────────────────────────────────
 
-function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, onInviteSent }) {
+function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, sentCrewInviteMap, onInviteSent, onToast }) {
   const insets = useSafeAreaInsets();
   const [sending, setSending] = useState(null); // crewId being sent
 
@@ -507,19 +566,26 @@ function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, 
   );
   const eligible = crews.filter((c) => !memberCrewIds.has(c.id));
 
-  const sendCrewInvite = async (crew) => {
+  const handleSend = async (crew) => {
+    // Client-side dedup: check map before attempting Firestore write
+    if (sentCrewInviteMap?.get(crew.id)?.has(contactUser.id)) {
+      onToast?.('invite already sent');
+      return;
+    }
     setSending(crew.id);
     try {
-      await addDoc(collection(db, 'crewInvites'), {
+      const sent = await sendCrewInviteDoc({
         crewId: crew.id,
         crewName: crew.name,
         fromUid: uid,
         fromName: myProfile?.name || auth.currentUser?.email || 'Unknown',
         toUid: contactUser.id,
         memberCount: (crew.members?.length || 1) + 1,
-        status: 'pending',
-        createdAt: serverTimestamp(),
       });
+      if (!sent) {
+        onToast?.('invite already sent');
+        return;
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       onInviteSent?.(crew.name);
       onClose();
@@ -554,23 +620,28 @@ function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, 
           {eligible.length === 0 ? (
             <Text style={styles.modalEmpty}>they're already in all your crews</Text>
           ) : (
-            eligible.map((crew) => (
-              <TouchableOpacity
-                key={crew.id}
-                style={styles.crewPickRow}
-                onPress={() => sendCrewInvite(crew)}
-                activeOpacity={0.75}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.memberName}>{crew.name}</Text>
-                  <Text style={styles.subText}>{crew.members?.length || 1} member{crew.members?.length !== 1 ? 's' : ''}</Text>
-                </View>
-                {sending === crew.id
-                  ? <ActivityIndicator size="small" color={ORANGE} />
-                  : <Text style={styles.modalSaveText}>invite →</Text>
-                }
-              </TouchableOpacity>
-            ))
+            eligible.map((crew) => {
+              const alreadyInvited = sentCrewInviteMap?.get(crew.id)?.has(contactUser.id);
+              return (
+                <TouchableOpacity
+                  key={crew.id}
+                  style={styles.crewPickRow}
+                  onPress={() => !alreadyInvited && handleSend(crew)}
+                  activeOpacity={alreadyInvited ? 1 : 0.75}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.memberName}>{crew.name}</Text>
+                    <Text style={styles.subText}>{crew.members?.length || 1} member{crew.members?.length !== 1 ? 's' : ''}</Text>
+                  </View>
+                  {sending === crew.id
+                    ? <ActivityIndicator size="small" color={ORANGE} />
+                    : alreadyInvited
+                      ? <Text style={styles.alreadyInvitedLabel}>invited</Text>
+                      : <Text style={styles.modalSaveText}>invite →</Text>
+                  }
+                </TouchableOpacity>
+              );
+            })
           )}
         </ScrollView>
       </View>
@@ -591,7 +662,10 @@ export default function CrewScreen({ navigation, route }) {
   const [pendingInvites, setPendingInvites] = useState([]);
   const [pendingCrewInvites, setPendingCrewInvites] = useState([]);
   const [sentUids, setSentUids] = useState(new Set());
+  // sentCrewInviteUids: flat Set<toUid> (for CreateCrewModal "already invited" hint)
+  // sentCrewInviteMap: Map<crewId, Set<toUid>> (for per-crew dedup in Detail + AddToCrew modals)
   const [sentCrewInviteUids, setSentCrewInviteUids] = useState(new Set());
+  const [sentCrewInviteMap, setSentCrewInviteMap] = useState(new Map());
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [detailCrew, setDetailCrew] = useState(null);
   const [showDetail, setShowDetail] = useState(false);
@@ -674,12 +748,23 @@ export default function CrewScreen({ navigation, route }) {
     );
   }, [uid]);
 
-  // Crew invites I've sent (to show "invited" state on contacts)
+  // Crew invites I've sent — build flat set + per-crew map for dedup checks
   useEffect(() => {
     if (!uid) return;
     return onSnapshot(
       query(collection(db, 'crewInvites'), where('fromUid', '==', uid), where('status', '==', 'pending')),
-      (snap) => setSentCrewInviteUids(new Set(snap.docs.map((d) => d.data().toUid)))
+      (snap) => {
+        const flat = new Set();
+        const byCrewId = new Map();
+        snap.docs.forEach((d) => {
+          const { toUid, crewId } = d.data();
+          flat.add(toUid);
+          if (!byCrewId.has(crewId)) byCrewId.set(crewId, new Set());
+          byCrewId.get(crewId).add(toUid);
+        });
+        setSentCrewInviteUids(flat);
+        setSentCrewInviteMap(byCrewId);
+      }
     );
   }, [uid]);
 
@@ -936,6 +1021,18 @@ export default function CrewScreen({ navigation, route }) {
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
+  // Deduplicate received crew invites: keep only the most recent per crewId
+  const deduplicatedCrewInvites = (() => {
+    const seen = new Map(); // crewId → invite (most recent)
+    for (const inv of pendingCrewInvites) {
+      const existing = seen.get(inv.crewId);
+      const invTime = inv.createdAt?.toMillis?.() ?? 0;
+      const exTime = existing?.createdAt?.toMillis?.() ?? 0;
+      if (!existing || invTime > exTime) seen.set(inv.crewId, inv);
+    }
+    return [...seen.values()];
+  })();
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <ScrollView
@@ -1003,10 +1100,10 @@ export default function CrewScreen({ navigation, route }) {
         })()}
 
         {/* ── Crew Invites ───────────────────────────── */}
-        {pendingCrewInvites.length > 0 && (
+        {deduplicatedCrewInvites.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>crew invites · {pendingCrewInvites.length}</Text>
-            {pendingCrewInvites.map((invite) => (
+            <Text style={styles.sectionLabel}>crew invites · {deduplicatedCrewInvites.length}</Text>
+            {deduplicatedCrewInvites.map((invite) => (
               <View key={invite.id} style={[styles.card, { borderColor: ORANGE + '55' }]}>
                 <View style={[styles.crewInviteIcon]}>
                   <Text style={{ fontSize: 18 }}>👥</Text>
@@ -1285,10 +1382,13 @@ export default function CrewScreen({ navigation, route }) {
         connections={connections}
         uid={uid}
         myProfile={myProfile}
+        sentCrewInviteUids={sentCrewInviteUids}
         onClose={() => setShowCreateModal(false)}
         onCreated={(_, inviteCount) => {
           if (inviteCount > 0) {
             showToast(`crew created — invite${inviteCount > 1 ? 's' : ''} sent to ${inviteCount} member${inviteCount > 1 ? 's' : ''}`);
+          } else {
+            showToast('crew created');
           }
         }}
       />
@@ -1298,10 +1398,12 @@ export default function CrewScreen({ navigation, route }) {
         uid={uid}
         myProfile={myProfile}
         connections={connections}
+        sentCrewInviteMap={sentCrewInviteMap}
         visible={showDetail}
         onClose={() => setShowDetail(false)}
         onInvitesSent={(count) => {
-          showToast(`invite${count > 1 ? 's' : ''} sent to ${count} member${count > 1 ? 's' : ''}`);
+          if (count > 0) showToast(`invite${count > 1 ? 's' : ''} sent to ${count} member${count > 1 ? 's' : ''}`);
+          else showToast('everyone is already invited');
         }}
       />
 
@@ -1313,7 +1415,9 @@ export default function CrewScreen({ navigation, route }) {
         crews={crews}
         uid={uid}
         myProfile={myProfile}
+        sentCrewInviteMap={sentCrewInviteMap}
         onInviteSent={(crewName) => showToast(`invite sent to join ${crewName}`)}
+        onToast={showToast}
       />
 
       {/* ── Toast ──────────────────────────────────────────────────────────── */}
@@ -1408,6 +1512,7 @@ const styles = StyleSheet.create({
   declineBtnText: { color: '#666', fontSize: 12, fontWeight: '700' },
   connectedText: { color: '#22c55e', fontSize: 12, fontWeight: '600' },
   sentText: { color: '#555', fontSize: 12 },
+  alreadyInvitedLabel: { color: '#555', fontSize: 11, fontStyle: 'italic' },
 
   // Empty states
   emptyCard: {
