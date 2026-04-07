@@ -15,6 +15,9 @@
     },
     "ios": {
       "supportsTablet": true,
+      "config": {
+        "googleMapsApiKey": "AIzaSyBe--Xw0VKeo9AE_alz_nFSOsN9cKnwtiY"
+      },
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Redline needs microphone access for crew radio",
         "NSPhotoLibraryUsageDescription": "Redline needs photo library access to set your profile picture",

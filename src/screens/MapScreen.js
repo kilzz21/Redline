@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, UrlTile } from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 import {
@@ -28,6 +28,22 @@ const TRAIL_MAX_AGE_MS = 5 * 60 * 1000;
 const TRAIL_MAX_POINTS = 30;
 const ARRIVED_THRESHOLD_MILES = 0.124; // ~200 meters
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
+
+const darkMapStyle = [
+  { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#255763' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#2c6675' }] },
+  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#255763' }] },
+  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#b0d5ce' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
+  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+  { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#57606f' }] },
+];
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -858,10 +874,12 @@ export default function MapScreen({ navigation }) {
       <View style={styles.mapWrap}>
         <MapView
           ref={mapRef}
+          provider={PROVIDER_GOOGLE}
           style={styles.map}
           region={region}
-          mapType="none"
-          showsUserLocation={false}
+          customMapStyle={darkMapStyle}
+          showsUserLocation={true}
+          followsUserLocation={false}
           showsMyLocationButton={false}
           showsCompass={false}
           rotateEnabled={false}
@@ -869,15 +887,6 @@ export default function MapScreen({ navigation }) {
           maxZoomLevel={18}
           onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          {/* OpenStreetMap — always free, no API key */}
-          <UrlTile
-            urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-            maximumZ={18}
-            minimumZ={10}
-            flipY={false}
-            tileSize={256}
-            shouldReplaceMapContent
-          />
 
           {/* Self dot */}
           {location && (
