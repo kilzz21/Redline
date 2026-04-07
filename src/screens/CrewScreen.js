@@ -11,7 +11,8 @@ import {
 } from 'firebase/firestore';
 import * as Contacts from 'expo-contacts';
 import * as Haptics from 'expo-haptics';
-import { auth, db } from '../config/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { auth, db, functions } from '../config/firebase';
 import { useCrews } from '../hooks/useCrews';
 import { useAcceptedCrew } from '../hooks/useAcceptedCrew';
 import { requestJoinChannel } from '../utils/radioJoinRequest';
@@ -40,6 +41,12 @@ async function expireCrewInvites(crewId) {
   } catch (e) {
     console.warn('[expireCrewInvites] failed:', e.message);
   }
+}
+
+// Fire-and-forget push notification — never throws, never blocks the caller.
+function pushNotify(toUid, title, body, data = {}) {
+  httpsCallable(functions, 'sendPushNotification')({ toUid, title, body, data })
+    .catch((e) => console.warn('[push]', e.message));
 }
 
 // Deterministic invite doc ID — enforces one invite per person per crew.
@@ -97,10 +104,10 @@ async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, m
   try {
     await setDoc(ref, payload);
     console.log('[crewInvite] setDoc success ✓');
+    pushNotify(toUid, 'crew invite', `${fromName} invited you to join ${crewName}`, { type: 'crewInvite', crewId });
     return true;
   } catch (writeErr) {
     console.log('[crewInvite] setDoc FAILED — code:', writeErr.code, 'msg:', writeErr.message);
-    console.log('[crewInvite] full error:', JSON.stringify(writeErr));
     throw writeErr;
   }
 }
@@ -967,13 +974,15 @@ export default function CrewScreen({ navigation, route }) {
   const sendInvite = async (toUser) => {
     if (!uid) return;
     try {
+      const fromName = myProfile?.name || auth.currentUser?.email || 'Unknown';
       await addDoc(collection(db, 'invites'), {
         fromUid: uid,
-        fromName: myProfile?.name || auth.currentUser?.email || 'Unknown',
+        fromName,
         toUid: toUser.id,
         status: 'pending',
         createdAt: serverTimestamp(),
       });
+      pushNotify(toUser.id, 'connection request', `${fromName} wants to connect on Redline`, { type: 'connectionRequest' });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       Alert.alert('Failed to send invite', e.message);
@@ -984,6 +993,12 @@ export default function CrewScreen({ navigation, route }) {
     try {
       await updateDoc(doc(db, 'invites', inviteId), { status });
       if (status === 'accepted') {
+        // Find the invite to get fromUid so we can notify them
+        const invite = pendingInvites.find((i) => i.id === inviteId);
+        if (invite?.fromUid) {
+          const responderName = myProfile?.name || auth.currentUser?.email || 'Someone';
+          pushNotify(invite.fromUid, 'request accepted', `${responderName} accepted your connection request`, { type: 'connectionRequest' });
+        }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (e) {
@@ -1026,6 +1041,11 @@ export default function CrewScreen({ navigation, route }) {
 
       // Step 2: mark invite as accepted.
       await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'accepted' });
+      // Notify the crew creator that someone joined.
+      if (invite.fromUid && invite.fromUid !== uid) {
+        const joinerName = myProfile?.name || auth.currentUser?.email || 'Someone';
+        pushNotify(invite.fromUid, 'crew joined', `${joinerName} joined ${invite.crewName}`, { type: 'crewInvite', crewId: invite.crewId });
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       Alert.alert('Failed', e.message);

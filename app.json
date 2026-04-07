@@ -18,7 +18,8 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Redline needs microphone access for crew radio",
         "NSPhotoLibraryUsageDescription": "Redline needs photo library access to set your profile picture",
-        "NSContactsUsageDescription": "Redline uses your contacts to find friends already on the app"
+        "NSContactsUsageDescription": "Redline uses your contacts to find friends already on the app",
+        "UIBackgroundModes": ["remote-notification"]
       },
       "bundleIdentifier": "com.anonymous.redline"
     },
@@ -27,10 +28,21 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#f97316",
+          "sounds": []
+        }
+      ]
+    ]
   }
 }
