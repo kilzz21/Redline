@@ -33,8 +33,11 @@ service cloud.firestore {
     // This gives a natural uniqueness guarantee — a second write to the same
     // crewId+toUid combo is an update on the same doc, not a new create.
     match /crewInvites/{inviteId} {
+      // resource is null when the doc doesn't exist — allow reads so clients
+      // can check existence before writing (getDoc on a non-existent doc).
       allow read: if request.auth != null &&
-                     (request.auth.uid == resource.data.fromUid ||
+                     (resource == null ||
+                      request.auth.uid == resource.data.fromUid ||
                       request.auth.uid == resource.data.toUid);
       // Enforce deterministic ID pattern and that the sender is authenticated.
       allow create: if request.auth != null &&

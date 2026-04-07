@@ -36,10 +36,40 @@ function crewInviteDocId(crewId, toUid) {
 
 // Returns true if sent, false if a pending invite already exists.
 async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, memberCount }) {
-  const ref = doc(db, 'crewInvites', crewInviteDocId(crewId, toUid));
-  const snap = await getDoc(ref);
-  if (snap.exists() && snap.data().status === 'pending') return false;
-  await setDoc(ref, {
+  // Force-refresh token so Firestore security context is fresh.
+  if (auth.currentUser) await auth.currentUser.getIdToken(true);
+
+  const docId = crewInviteDocId(crewId, toUid);
+  const ref = doc(db, 'crewInvites', docId);
+
+  console.log('[crewInvite] === SENDING INVITE ===');
+  console.log('[crewInvite] docId:', docId);
+  console.log('[crewInvite] collection path:', ref.path);
+  console.log('[crewInvite] crewId:', crewId);
+  console.log('[crewInvite] toUid:', toUid);
+  console.log('[crewInvite] fromUid (param):', fromUid);
+  console.log('[crewInvite] auth.currentUser?.uid:', auth.currentUser?.uid);
+  console.log('[crewInvite] fromUid matches auth?', fromUid === auth.currentUser?.uid);
+
+  // Check for existing pending invite.
+  // NOTE: if the doc doesn't exist, getDoc still needs read permission —
+  // rules must allow resource == null (non-existent doc) reads.
+  let snap;
+  try {
+    snap = await getDoc(ref);
+    console.log('[crewInvite] getDoc success — exists:', snap.exists());
+  } catch (readErr) {
+    console.log('[crewInvite] getDoc FAILED — code:', readErr.code, 'msg:', readErr.message);
+    // If we can't read (doc likely doesn't exist yet), proceed to write.
+    snap = null;
+  }
+
+  if (snap?.exists() && snap.data().status === 'pending') {
+    console.log('[crewInvite] duplicate — pending invite already exists, skipping');
+    return false;
+  }
+
+  const payload = {
     crewId,
     crewName,
     fromUid,
@@ -48,8 +78,18 @@ async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, m
     memberCount,
     status: 'pending',
     createdAt: serverTimestamp(),
-  });
-  return true;
+  };
+  console.log('[crewInvite] writing payload:', JSON.stringify({ ...payload, createdAt: '<serverTimestamp>' }));
+
+  try {
+    await setDoc(ref, payload);
+    console.log('[crewInvite] setDoc success ✓');
+    return true;
+  } catch (writeErr) {
+    console.log('[crewInvite] setDoc FAILED — code:', writeErr.code, 'msg:', writeErr.message);
+    console.log('[crewInvite] full error:', JSON.stringify(writeErr));
+    throw writeErr;
+  }
 }
 
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
@@ -574,6 +614,8 @@ function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, 
     }
     setSending(crew.id);
     try {
+      console.log('[crewInvite] crew.members:', JSON.stringify(crew.members));
+      console.log('[crewInvite] uid in crew.members?', crew.members?.includes(uid));
       const sent = await sendCrewInviteDoc({
         crewId: crew.id,
         crewName: crew.name,
@@ -590,6 +632,7 @@ function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, 
       onInviteSent?.(crew.name);
       onClose();
     } catch (e) {
+      console.log('[crewInvite] handleSend error — code:', e.code, 'msg:', e.message);
       Alert.alert('Failed to invite', e.message);
     } finally {
       setSending(null);
