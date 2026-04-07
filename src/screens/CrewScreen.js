@@ -29,6 +29,19 @@ function normalizePhone(raw) {
   return raw.replace(/\D/g, '');
 }
 
+// Mark all pending crewInvites for a crew as expired (called when crew is deleted).
+// Only returns docs where auth user is fromUid or toUid (rule-enforced).
+async function expireCrewInvites(crewId) {
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'crewInvites'), where('crewId', '==', crewId), where('status', '==', 'pending'))
+    );
+    await Promise.all(snap.docs.map((d) => updateDoc(d.ref, { status: 'expired' })));
+  } catch (e) {
+    console.warn('[expireCrewInvites] failed:', e.message);
+  }
+}
+
 // Deterministic invite doc ID — enforces one invite per person per crew.
 function crewInviteDocId(crewId, toUid) {
   return `${crewId}_${toUid}`;
@@ -469,6 +482,7 @@ function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap,
               style: 'destructive',
               onPress: async () => {
                 try {
+                  await expireCrewInvites(crew.id);
                   await deleteDoc(doc(db, 'crews', crew.id));
                   onClose();
                 } catch (e) {
@@ -704,6 +718,7 @@ export default function CrewScreen({ navigation, route }) {
   const [myProfile, setMyProfile] = useState(null);
   const [pendingInvites, setPendingInvites] = useState([]);
   const [pendingCrewInvites, setPendingCrewInvites] = useState([]);
+  const [expiredCrewInvites, setExpiredCrewInvites] = useState([]);
   const [sentUids, setSentUids] = useState(new Set());
   // sentCrewInviteUids: flat Set<toUid> (for CreateCrewModal "already invited" hint)
   // sentCrewInviteMap: Map<crewId, Set<toUid>> (for per-crew dedup in Detail + AddToCrew modals)
@@ -779,6 +794,15 @@ export default function CrewScreen({ navigation, route }) {
     return onSnapshot(
       query(collection(db, 'crewInvites'), where('toUid', '==', uid), where('status', '==', 'pending')),
       (snap) => setPendingCrewInvites(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+  }, [uid]);
+
+  // Expired crew invites (crew was deleted after invite was sent)
+  useEffect(() => {
+    if (!uid) return;
+    return onSnapshot(
+      query(collection(db, 'crewInvites'), where('toUid', '==', uid), where('status', '==', 'expired')),
+      (snap) => setExpiredCrewInvites(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
   }, [uid]);
 
@@ -984,33 +1008,24 @@ export default function CrewScreen({ navigation, route }) {
 
   const acceptCrewInvite = async (invite) => {
     try {
-      // Force-refresh token so Firestore security context is current.
       if (auth.currentUser) await auth.currentUser.getIdToken(true);
 
-      console.log('[acceptInvite] invite.id:', invite.id);
-      console.log('[acceptInvite] invite.crewId:', invite.crewId);
-      console.log('[acceptInvite] invite.toUid:', invite.toUid);
-      console.log('[acceptInvite] auth uid:', auth.currentUser?.uid);
-      console.log('[acceptInvite] uid state:', uid);
-
-      // Step 1: add self to crew members
+      // Step 1: add self to crew members.
+      // If the crew was deleted, updateDoc throws 'not-found' — handle gracefully.
       try {
         await updateDoc(doc(db, 'crews', invite.crewId), { members: arrayUnion(uid) });
-        console.log('[acceptInvite] crew update success ✓');
       } catch (crewErr) {
-        console.log('[acceptInvite] crew update FAILED — code:', crewErr.code, 'msg:', crewErr.message);
+        if (crewErr.code === 'not-found') {
+          // Crew no longer exists — mark invite expired and surface a toast.
+          await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'expired' }).catch(() => {});
+          showToast('this crew no longer exists');
+          return;
+        }
         throw crewErr;
       }
 
-      // Step 2: mark invite as accepted
-      try {
-        await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'accepted' });
-        console.log('[acceptInvite] crewInvites update success ✓');
-      } catch (invErr) {
-        console.log('[acceptInvite] crewInvites update FAILED — code:', invErr.code, 'msg:', invErr.message);
-        throw invErr;
-      }
-
+      // Step 2: mark invite as accepted.
+      await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'accepted' });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       Alert.alert('Failed', e.message);
@@ -1020,6 +1035,14 @@ export default function CrewScreen({ navigation, route }) {
   const declineCrewInvite = async (invite) => {
     try {
       await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'declined' });
+    } catch (e) {
+      Alert.alert('Failed', e.message);
+    }
+  };
+
+  const dismissExpiredInvite = async (invite) => {
+    try {
+      await deleteDoc(doc(db, 'crewInvites', invite.id));
     } catch (e) {
       Alert.alert('Failed', e.message);
     }
@@ -1070,7 +1093,10 @@ export default function CrewScreen({ navigation, route }) {
                 text: 'Delete',
                 style: 'destructive',
                 onPress: async () => {
-                  try { await deleteDoc(doc(db, 'crews', crew.id)); } catch (e) { Alert.alert('Failed', e.message); }
+                  try {
+                    await expireCrewInvites(crew.id);
+                    await deleteDoc(doc(db, 'crews', crew.id));
+                  } catch (e) { Alert.alert('Failed', e.message); }
                 },
               },
             ]),
@@ -1168,12 +1194,16 @@ export default function CrewScreen({ navigation, route }) {
         })()}
 
         {/* ── Crew Invites ───────────────────────────── */}
-        {deduplicatedCrewInvites.length > 0 && (
+        {(deduplicatedCrewInvites.length > 0 || expiredCrewInvites.length > 0) && (
           <>
-            <Text style={styles.sectionLabel}>crew invites · {deduplicatedCrewInvites.length}</Text>
+            <Text style={styles.sectionLabel}>
+              crew invites{deduplicatedCrewInvites.length > 0 ? ` · ${deduplicatedCrewInvites.length}` : ''}
+            </Text>
+
+            {/* Active invites */}
             {deduplicatedCrewInvites.map((invite) => (
               <View key={invite.id} style={[styles.card, { borderColor: ORANGE + '55' }]}>
-                <View style={[styles.crewInviteIcon]}>
+                <View style={styles.crewInviteIcon}>
                   <Text style={{ fontSize: 18 }}>👥</Text>
                 </View>
                 <View style={[styles.cardBody, { marginLeft: 12 }]}>
@@ -1196,6 +1226,26 @@ export default function CrewScreen({ navigation, route }) {
                     <Text style={styles.declineBtnText}>✕</Text>
                   </TouchableOpacity>
                 </View>
+              </View>
+            ))}
+
+            {/* Expired invites (crew was deleted) */}
+            {expiredCrewInvites.map((invite) => (
+              <View key={invite.id} style={[styles.card, { borderColor: '#333', opacity: 0.7 }]}>
+                <View style={styles.crewInviteIcon}>
+                  <Text style={{ fontSize: 18 }}>🚫</Text>
+                </View>
+                <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                  <Text style={[styles.memberName, { color: '#666' }]} numberOfLines={1}>{invite.crewName}</Text>
+                  <Text style={styles.subText}>crew no longer available</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.declineBtn}
+                  onPress={() => dismissExpiredInvite(invite)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.declineBtnText}>dismiss</Text>
+                </TouchableOpacity>
               </View>
             ))}
           </>
