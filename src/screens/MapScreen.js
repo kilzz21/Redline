@@ -144,6 +144,8 @@ function DestinationPin({ name }) {
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
 async function searchPlaces(query, userLat, userLng) {
+  const headers = { 'X-Ios-Bundle-Identifier': 'com.kilzz21.redline' };
+
   const locationParam = (userLat != null && userLng != null)
     ? `&location=${userLat},${userLng}&radius=50000`
     : '';
@@ -151,8 +153,9 @@ async function searchPlaces(query, userLat, userLng) {
     `https://maps.googleapis.com/maps/api/place/autocomplete/json` +
     `?input=${encodeURIComponent(query)}${locationParam}&key=${GOOGLE_PLACES_KEY}`;
 
-  const acRes = await fetch(autocompleteUrl);
+  const acRes = await fetch(autocompleteUrl, { headers });
   const acData = await acRes.json();
+  console.log('[Places autocomplete] status:', acData.status, acData.error_message ?? '');
   if (!acData.predictions?.length) return [];
 
   const results = await Promise.all(
@@ -160,8 +163,9 @@ async function searchPlaces(query, userLat, userLng) {
       const detailUrl =
         `https://maps.googleapis.com/maps/api/place/details/json` +
         `?place_id=${p.place_id}&fields=name,geometry,formatted_address&key=${GOOGLE_PLACES_KEY}`;
-      const detailRes = await fetch(detailUrl);
+      const detailRes = await fetch(detailUrl, { headers });
       const detail = await detailRes.json();
+      console.log('[Places details] status:', detail.status, detail.error_message ?? '');
       const loc = detail.result?.geometry?.location;
       if (!loc) return null;
       return {
