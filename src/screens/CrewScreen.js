@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput,
   Alert, Share, Image, ActivityIndicator, Modal, KeyboardAvoidingView,
-  Platform, Animated, RefreshControl,
+  Platform, Animated, RefreshControl, Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc,
   doc, documentId, serverTimestamp, getDocs, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
+import * as Contacts from 'expo-contacts';
 import * as Haptics from 'expo-haptics';
 import { auth, db } from '../config/firebase';
 import { useCrews } from '../hooks/useCrews';
@@ -17,6 +18,16 @@ import { requestJoinChannel } from '../utils/radioJoinRequest';
 import { SkeletonList } from '../components/SkeletonCard';
 
 const ORANGE = '#f97316';
+
+// ─── Contacts cache (module-level, 5-min TTL) ─────────────────────────────────
+let _contactsCache = null;
+let _contactsCacheTime = 0;
+const CONTACTS_TTL = 5 * 60 * 1000;
+
+function normalizePhone(raw) {
+  if (!raw) return '';
+  return raw.replace(/\D/g, '');
+}
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -484,6 +495,89 @@ function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, 
   );
 }
 
+// ─── Add to Crew Modal ───────────────────────────────────────────────────────
+
+function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, onInviteSent }) {
+  const insets = useSafeAreaInsets();
+  const [sending, setSending] = useState(null); // crewId being sent
+
+  if (!contactUser) return null;
+  const memberCrewIds = new Set(
+    crews.filter((c) => c.members?.includes(contactUser.id)).map((c) => c.id)
+  );
+  const eligible = crews.filter((c) => !memberCrewIds.has(c.id));
+
+  const sendCrewInvite = async (crew) => {
+    setSending(crew.id);
+    try {
+      await addDoc(collection(db, 'crewInvites'), {
+        crewId: crew.id,
+        crewName: crew.name,
+        fromUid: uid,
+        fromName: myProfile?.name || auth.currentUser?.email || 'Unknown',
+        toUid: contactUser.id,
+        memberCount: (crew.members?.length || 1) + 1,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      onInviteSent?.(crew.name);
+      onClose();
+    } catch (e) {
+      Alert.alert('Failed to invite', e.message);
+    } finally {
+      setSending(null);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={[styles.modalRoot, { paddingTop: insets.top }]}>
+        <View style={styles.modalHeader}>
+          <TouchableOpacity onPress={onClose} style={styles.modalHeaderBtn}>
+            <Text style={styles.modalCancelText}>cancel</Text>
+          </TouchableOpacity>
+          <Text style={styles.modalTitle} numberOfLines={1}>invite to crew</Text>
+          <View style={styles.modalHeaderBtn} />
+        </View>
+        <ScrollView contentContainerStyle={styles.modalScroll} showsVerticalScrollIndicator={false}>
+          <View style={[styles.card, { marginBottom: 16 }]}>
+            <Avatar photoURL={contactUser.photoURL} name={contactUser.name} uid={contactUser.id} size={40} />
+            <View style={[styles.cardBody, { marginLeft: 12 }]}>
+              <Text style={styles.memberName}>{contactUser.name}</Text>
+              {formatCarString(contactUser.car)
+                ? <Text style={styles.subText}>{formatCarString(contactUser.car)}</Text>
+                : null}
+            </View>
+          </View>
+          <Text style={styles.modalSectionLabel}>pick a crew</Text>
+          {eligible.length === 0 ? (
+            <Text style={styles.modalEmpty}>they're already in all your crews</Text>
+          ) : (
+            eligible.map((crew) => (
+              <TouchableOpacity
+                key={crew.id}
+                style={styles.crewPickRow}
+                onPress={() => sendCrewInvite(crew)}
+                activeOpacity={0.75}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.memberName}>{crew.name}</Text>
+                  <Text style={styles.subText}>{crew.members?.length || 1} member{crew.members?.length !== 1 ? 's' : ''}</Text>
+                </View>
+                {sending === crew.id
+                  ? <ActivityIndicator size="small" color={ORANGE} />
+                  : <Text style={styles.modalSaveText}>invite →</Text>
+                }
+              </TouchableOpacity>
+            ))
+          )}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function CrewScreen({ navigation, route }) {
@@ -497,6 +591,7 @@ export default function CrewScreen({ navigation, route }) {
   const [pendingInvites, setPendingInvites] = useState([]);
   const [pendingCrewInvites, setPendingCrewInvites] = useState([]);
   const [sentUids, setSentUids] = useState(new Set());
+  const [sentCrewInviteUids, setSentCrewInviteUids] = useState(new Set());
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [detailCrew, setDetailCrew] = useState(null);
   const [showDetail, setShowDetail] = useState(false);
@@ -508,6 +603,13 @@ export default function CrewScreen({ navigation, route }) {
   const toastAnim = useRef(new Animated.Value(0)).current;
   const searchTimer = useRef(null);
 
+  // Contacts state
+  const [contactsPermission, setContactsPermission] = useState(null); // null | 'granted' | 'denied'
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [onRedline, setOnRedline] = useState([]);
+  const [notOnRedline, setNotOnRedline] = useState([]);
+  const [addToCrewTarget, setAddToCrewTarget] = useState(null);
+
   // Loading skeleton — hide after first data arrives
   useEffect(() => {
     if (crews.length >= 0 || connections.length >= 0) {
@@ -518,7 +620,9 @@ export default function CrewScreen({ navigation, route }) {
 
   const handleRefresh = () => {
     setRefreshing(true);
-    setTimeout(() => setRefreshing(false), 800);
+    _contactsCache = null;
+    _contactsCacheTime = 0;
+    loadContacts(true).finally(() => setRefreshing(false));
   };
 
   // Handle redline://invite/USER_ID deep link — fetch and surface that user
@@ -569,6 +673,119 @@ export default function CrewScreen({ navigation, route }) {
       (snap) => setSentUids(new Set(snap.docs.map((d) => d.data().toUid)))
     );
   }, [uid]);
+
+  // Crew invites I've sent (to show "invited" state on contacts)
+  useEffect(() => {
+    if (!uid) return;
+    return onSnapshot(
+      query(collection(db, 'crewInvites'), where('fromUid', '==', uid), where('status', '==', 'pending')),
+      (snap) => setSentCrewInviteUids(new Set(snap.docs.map((d) => d.data().toUid)))
+    );
+  }, [uid]);
+
+  // Load phone contacts
+  const loadContacts = useCallback(async (force = false) => {
+    if (!uid) return;
+    const now = Date.now();
+    if (!force && _contactsCache && now - _contactsCacheTime < CONTACTS_TTL) {
+      setOnRedline(_contactsCache.onRedline);
+      setNotOnRedline(_contactsCache.notOnRedline);
+      setContactsPermission('granted');
+      return;
+    }
+
+    const { status } = await Contacts.requestPermissionsAsync();
+    if (status !== 'granted') {
+      setContactsPermission('denied');
+      return;
+    }
+    setContactsPermission('granted');
+    setContactsLoading(true);
+
+    try {
+      const { data } = await Contacts.getContactsAsync({
+        fields: [Contacts.Fields.Emails, Contacts.Fields.PhoneNumbers, Contacts.Fields.Name],
+      });
+
+      const emailToContact = {};
+      const phoneToContact = {};
+
+      for (const c of data) {
+        const name = c.name?.trim();
+        if (!name) continue;
+        const phone = c.phoneNumbers?.[0]?.number;
+        for (const e of c.emails || []) {
+          const em = e.email?.toLowerCase().trim();
+          if (em) emailToContact[em] = { name, phone };
+        }
+        const digits = normalizePhone(phone);
+        if (digits.length >= 7) phoneToContact[digits] = { name, phone };
+      }
+
+      const emails = Object.keys(emailToContact);
+      const phones = Object.keys(phoneToContact);
+      const matchedById = {};
+
+      // Batch email queries (max 30 per Firestore `in`)
+      for (let i = 0; i < emails.length; i += 30) {
+        const snap = await getDocs(
+          query(collection(db, 'users'), where('email', 'in', emails.slice(i, i + 30)))
+        );
+        snap.docs.forEach((d) => {
+          if (d.id !== uid) matchedById[d.id] = { id: d.id, ...d.data() };
+        });
+      }
+      // Batch phone queries
+      for (let i = 0; i < phones.length; i += 30) {
+        const snap = await getDocs(
+          query(collection(db, 'users'), where('phoneNumberNormalized', 'in', phones.slice(i, i + 30)))
+        );
+        snap.docs.forEach((d) => {
+          if (d.id !== uid) matchedById[d.id] = { id: d.id, ...d.data() };
+        });
+      }
+
+      const matched = Object.values(matchedById);
+      const matchedEmails = new Set(matched.map((u) => u.email?.toLowerCase()).filter(Boolean));
+      const matchedPhones = new Set(matched.map((u) => u.phoneNumberNormalized).filter(Boolean));
+
+      // Build not-on-Redline list from raw contacts
+      const notMatched = [];
+      const seenNames = new Set();
+      for (const c of data) {
+        const name = c.name?.trim();
+        if (!name || seenNames.has(name)) continue;
+        const em = c.emails?.[0]?.email?.toLowerCase().trim();
+        const digits = normalizePhone(c.phoneNumbers?.[0]?.number);
+        const isMatched =
+          (em && matchedEmails.has(em)) || (digits.length >= 7 && matchedPhones.has(digits));
+        if (!isMatched) {
+          const phone = c.phoneNumbers?.[0]?.number;
+          if (phone) { // only include if they have a phone number to SMS
+            seenNames.add(name);
+            notMatched.push({ name, phone });
+          }
+        }
+      }
+
+      const result = {
+        onRedline: matched,
+        notOnRedline: notMatched.slice(0, 50),
+      };
+      _contactsCache = result;
+      _contactsCacheTime = now;
+      setOnRedline(result.onRedline);
+      setNotOnRedline(result.notOnRedline);
+    } catch (e) {
+      console.warn('Contacts load failed:', e.message);
+    } finally {
+      setContactsLoading(false);
+    }
+  }, [uid]);
+
+  useEffect(() => {
+    loadContacts();
+  }, [loadContacts]);
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -957,6 +1174,109 @@ export default function CrewScreen({ navigation, route }) {
           </>
         )}
 
+        {/* ── Already on Redline ─────────────────────── */}
+        {contactsPermission === 'denied' ? (
+          <>
+            <Text style={styles.sectionLabel}>contacts</Text>
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>contacts access needed</Text>
+              <Text style={styles.emptySub}>
+                allow contacts so you can see which friends are already on Redline
+              </Text>
+              <TouchableOpacity
+                style={styles.emptyAction}
+                onPress={() => Linking.openSettings()}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.emptyActionText}>open settings</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : contactsPermission === 'granted' ? (
+          <>
+            {contactsLoading ? (
+              <>
+                <Text style={styles.sectionLabel}>already on redline</Text>
+                <SkeletonList count={3} height={64} />
+              </>
+            ) : onRedline.length > 0 ? (
+              <>
+                <Text style={styles.sectionLabel}>already on redline · {onRedline.length}</Text>
+                {onRedline.map((user) => {
+                  const inCrewTogether = crews.some((c) => c.members?.includes(user.id));
+                  const alreadyInvited = sentCrewInviteUids.has(user.id);
+                  return (
+                    <View key={user.id} style={styles.card}>
+                      <Avatar
+                        photoURL={user.photoURL}
+                        name={user.name}
+                        uid={user.id}
+                        size={40}
+                      />
+                      <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                        <Text style={styles.memberName} numberOfLines={1}>{user.name || 'Unknown'}</Text>
+                        {formatCarString(user.car)
+                          ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(user.car)}</Text>
+                          : null}
+                        {user.location
+                          ? <Text style={styles.subText} numberOfLines={1}>{user.location}</Text>
+                          : null}
+                      </View>
+                      {inCrewTogether ? (
+                        <Text style={styles.sentText}>in crew</Text>
+                      ) : alreadyInvited ? (
+                        <Text style={styles.sentText}>invited</Text>
+                      ) : crews.length > 0 ? (
+                        <TouchableOpacity
+                          style={styles.addBtn}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            setAddToCrewTarget(user);
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.addBtnText}>add to crew</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </>
+            ) : null}
+
+            {/* ── Invite Friends via SMS ──────────────── */}
+            {notOnRedline.length > 0 && (
+              <>
+                <Text style={styles.sectionLabel}>invite friends · {notOnRedline.length}</Text>
+                {notOnRedline.map((c, i) => (
+                  <View key={`${c.name}-${i}`} style={styles.card}>
+                    <View style={styles.contactInitialCircle}>
+                      <Text style={styles.contactInitialText}>{getInitials(c.name)}</Text>
+                    </View>
+                    <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                      <Text style={styles.memberName} numberOfLines={1}>{c.name}</Text>
+                      <Text style={styles.subText}>{c.phone}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.smsBtn}
+                      onPress={() => {
+                        const digits = normalizePhone(c.phone);
+                        const msg = encodeURIComponent(
+                          "Hey I'm using Redline — a car app for our crew. Download it and join me!"
+                        );
+                        Linking.openURL(`sms:${digits}${Platform.OS === 'ios' ? '&' : '?'}body=${msg}`);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.smsBtnText}>invite</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </>
+            )}
+          </>
+        ) : null}
+
       </ScrollView>
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
@@ -983,6 +1303,17 @@ export default function CrewScreen({ navigation, route }) {
         onInvitesSent={(count) => {
           showToast(`invite${count > 1 ? 's' : ''} sent to ${count} member${count > 1 ? 's' : ''}`);
         }}
+      />
+
+      {/* ── Add to Crew Modal ──────────────────────────────────────────────── */}
+      <AddToCrewModal
+        visible={!!addToCrewTarget}
+        onClose={() => setAddToCrewTarget(null)}
+        contactUser={addToCrewTarget}
+        crews={crews}
+        uid={uid}
+        myProfile={myProfile}
+        onInviteSent={(crewName) => showToast(`invite sent to join ${crewName}`)}
       />
 
       {/* ── Toast ──────────────────────────────────────────────────────────── */}
@@ -1155,6 +1486,24 @@ const styles = StyleSheet.create({
   crewInviteIcon: {
     width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2a2a',
     alignItems: 'center', justifyContent: 'center',
+  },
+
+  // Contacts
+  contactInitialCircle: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2a2a',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  contactInitialText: { color: '#888', fontSize: 14, fontWeight: '700' },
+  smsBtn: {
+    backgroundColor: '#1e3a2a', borderRadius: 8, borderWidth: 1,
+    borderColor: '#22c55e44', paddingHorizontal: 12, paddingVertical: 7,
+  },
+  smsBtnText: { color: '#22c55e', fontSize: 12, fontWeight: '700' },
+
+  // Add-to-crew picker row
+  crewPickRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 14, borderBottomWidth: 0.5, borderBottomColor: '#1e1e1e',
   },
 
   toast: {
