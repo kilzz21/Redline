@@ -143,22 +143,24 @@ function DestinationPin({ name }) {
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
 async function searchNominatim(query, userLat, userLng) {
-  // Fetch more results so client-side distance sort has enough to work with
-  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=15&addressdetails=1&dedupe=1`;
+  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=20&addressdetails=1&namedetails=1&dedupe=1`;
   if (userLat != null && userLng != null) {
     // Soft viewbox bias (~7mi box) — no bounded param so global results still appear
     url += `&viewbox=${userLng - 0.1},${userLat - 0.1},${userLng + 0.1},${userLat + 0.1}`;
   }
   const res = await fetch(url, { headers: { 'User-Agent': 'Redline/1.0' } });
   const data = await res.json();
-  // Compute exact haversine distances then sort purely client-side
   return data
     .map((r) => {
       const lat = parseFloat(r.lat);
       const lng = parseFloat(r.lon);
       const dist = userLat != null ? haversineMiles(userLat, userLng, lat, lng) : null;
-      const namePart = r.display_name.split(',')[0].trim();
-      return { name: namePart, fullAddress: r.display_name, latitude: lat, longitude: lng, distance: dist };
+      // Prefer namedetails.name, fall back to first segment of display_name
+      const name = r.namedetails?.name || r.display_name.split(',')[0].trim();
+      // Subtitle: second comma segment (typically neighborhood or city)
+      const parts = r.display_name.split(',');
+      const subtitle = parts.length > 1 ? parts[1].trim() : '';
+      return { name, subtitle, fullAddress: r.display_name, latitude: lat, longitude: lng, distance: dist };
     })
     .sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
 }
@@ -185,7 +187,7 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
   }, [visible]);
 
   const runSearch = useCallback(async (text) => {
-    if (!text.trim() || text.trim().length < 2) { setResults([]); return; }
+    if (!text.trim() || text.trim().length < 3) { setResults([]); return; }
     setSearching(true);
     setError('');
     try {
@@ -204,7 +206,7 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
     setSelected(null);
     setError('');
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => runSearch(text), 500);
+    debounceRef.current = setTimeout(() => runSearch(text), 300);
   };
 
   const pickResult = (r) => {
@@ -276,11 +278,13 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
 
           {/* GPS status + drop pin */}
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-            {gpsLocating
-              ? <Text style={styles.dropPinText}>locating you...</Text>
-              : gpsLocation
-                ? <Text style={styles.dropPinText}>📍 results sorted by distance from you</Text>
-                : <Text style={styles.dropPinText}>results may not be sorted by distance</Text>
+            {searching
+              ? <Text style={styles.dropPinText}>searching nearby...</Text>
+              : gpsLocating
+                ? <Text style={styles.dropPinText}>locating you...</Text>
+                : gpsLocation
+                  ? <Text style={styles.dropPinText}>📍 results sorted by distance from you</Text>
+                  : <Text style={styles.dropPinText}>results may not be sorted by distance</Text>
             }
             <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} onPress={dropPin} activeOpacity={0.7}>
               <Ionicons name="pin-outline" size={14} color="#888" />
@@ -322,7 +326,7 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
                   <Ionicons name="location-outline" size={16} color="#555" style={{ marginRight: 10, marginTop: 1 }} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.resultName} numberOfLines={1}>{r.name}</Text>
-                    <Text style={styles.resultAddr} numberOfLines={1}>{r.fullAddress}</Text>
+                    {r.subtitle ? <Text style={styles.resultAddr} numberOfLines={1}>{r.subtitle}</Text> : null}
                   </View>
                   {r.distance != null && (
                     <Text style={styles.resultDist}>
@@ -770,21 +774,15 @@ export default function MapScreen({ navigation }) {
             const myName = myProfileRef.current?.name || auth.currentUser?.email || 'Someone';
             const crew = crewsRef.current.find((c) => c.id === activeCrewId);
 
-            // Remove destination field from crew doc
+            // Remove destination field from crew doc (any member is allowed via Firestore rules)
             await updateDoc(doc(db, 'crews', activeCrewId), { destination: deleteField() });
 
-            // Clear arrived + OTW status for all crew members
-            if (crew?.members?.length) {
-              await Promise.all(
-                crew.members.map((memberId) =>
-                  setDoc(doc(db, 'users', memberId), {
-                    arrivedAtDestination: false,
-                    otwToDestination: false,
-                    otwCrewId: null,
-                  }, { merge: true })
-                )
-              );
-            }
+            // Only reset OTW/arrived for the current user (can't write other users' docs)
+            await updateDoc(doc(db, 'users', uid), {
+              arrivedAtDestination: false,
+              otwToDestination: false,
+              otwCrewId: null,
+            });
 
             arrivedRef.current = false;
             setOtw(false);
