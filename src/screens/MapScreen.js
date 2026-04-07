@@ -410,6 +410,9 @@ export default function MapScreen({ navigation }) {
   const [smoothedPositions, setSmoothedPositions] = useState({});
   const [routeCoords, setRouteCoords] = useState(null); // Google Directions polyline
   const [memberETAs, setMemberETAs] = useState({}); // uid → { duration, distance }
+  const [isOffCenter, setIsOffCenter] = useState(false);
+  const pillOpacity = useRef(new Animated.Value(0)).current;
+  const pillTimeoutRef = useRef(null);
 
   const crewsRef = useRef([]);
   crewsRef.current = crews;
@@ -956,6 +959,38 @@ export default function MapScreen({ navigation }) {
     }
   }, [otw, activeCrewId, destination, uid]);
 
+  const recenter = () => {
+    if (!location) return;
+    mapRef.current?.animateToRegion({
+      latitude: location.latitude,
+      longitude: location.longitude,
+      latitudeDelta: 0.01,
+      longitudeDelta: 0.01,
+    }, 500);
+    setIsOffCenter(false);
+    Animated.timing(pillOpacity, { toValue: 0, duration: 200, useNativeDriver: true }).start();
+    if (pillTimeoutRef.current) clearTimeout(pillTimeoutRef.current);
+  };
+
+  const onMapPan = (region) => {
+    mapCenterRef.current = { latitude: region.latitude, longitude: region.longitude };
+    if (!location) return;
+    const latDiff = Math.abs(region.latitude - location.latitude);
+    const lngDiff = Math.abs(region.longitude - location.longitude);
+    if (latDiff > 0.002 || lngDiff > 0.002) {
+      if (!isOffCenter) {
+        setIsOffCenter(true);
+        Animated.timing(pillOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+      }
+      if (pillTimeoutRef.current) clearTimeout(pillTimeoutRef.current);
+      pillTimeoutRef.current = setTimeout(() => {
+        Animated.timing(pillOpacity, { toValue: 0, duration: 400, useNativeDriver: true }).start(() =>
+          setIsOffCenter(false)
+        );
+      }, 5000);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -969,7 +1004,7 @@ export default function MapScreen({ navigation }) {
           style={styles.map}
           region={region}
           customMapStyle={darkMapStyle}
-          showsUserLocation={true}
+          showsUserLocation={false}
           followsUserLocation={false}
           showsMyLocationButton={false}
           showsCompass={false}
@@ -978,7 +1013,7 @@ export default function MapScreen({ navigation }) {
           rotateEnabled={false}
           minZoomLevel={3}
           maxZoomLevel={18}
-          onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
+          onRegionChange={onMapPan}
         >
 
           {/* Self dot */}
@@ -1062,6 +1097,21 @@ export default function MapScreen({ navigation }) {
             );
           })}
         </MapView>
+
+        {/* Recenter pill — appears when user pans away */}
+        <Animated.View style={[styles.recenterPill, { opacity: pillOpacity }]} pointerEvents={isOffCenter ? 'auto' : 'none'}>
+          <TouchableOpacity style={styles.recenterPillInner} onPress={recenter} activeOpacity={0.8}>
+            <Ionicons name="locate-outline" size={13} color="#fff" />
+            <Text style={styles.recenterPillText}>tap to recenter</Text>
+          </TouchableOpacity>
+        </Animated.View>
+
+        {/* Recenter button — bottom right */}
+        {location && (
+          <TouchableOpacity style={styles.recenterBtn} onPress={recenter} activeOpacity={0.8}>
+            <Ionicons name="locate" size={20} color={ORANGE} />
+          </TouchableOpacity>
+        )}
 
         {locating && (
           <View style={styles.locatingBanner}>
@@ -1310,6 +1360,26 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#111' },
   mapWrap: { flex: 6 },
   map: { flex: 1 },
+
+  recenterBtn: {
+    position: 'absolute', bottom: 20, right: 16,
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: '#1a1a1a', borderWidth: 0.5, borderColor: '#2a2a2a',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
+  },
+  recenterPill: {
+    position: 'absolute', top: 14, alignSelf: 'center',
+    left: 0, right: 0, alignItems: 'center',
+    pointerEvents: 'none',
+  },
+  recenterPillInner: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: '#1a1a1acc', borderRadius: 20,
+    borderWidth: 0.5, borderColor: '#3a3a3a',
+    paddingVertical: 7, paddingHorizontal: 14,
+  },
+  recenterPillText: { color: '#fff', fontSize: 12, fontWeight: '500' },
 
   locatingBanner: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
