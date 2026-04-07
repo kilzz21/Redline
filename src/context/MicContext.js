@@ -6,7 +6,7 @@ export function MicProvider({ children }) {
   const [micOn, setMicOn] = useState(false);
   const toggleMic = () => setMicOn((v) => !v);
   return (
-    <MicContext.Provider value={{ micOn, toggleMic }}>
+    <MicContext.Provider value={{ micOn, setMicOn, toggleMic }}>
       {children}
     </MicContext.Provider>
   );

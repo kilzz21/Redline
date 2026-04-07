@@ -13,7 +13,10 @@
       "backgroundColor": "#111111"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Redline needs microphone access for crew radio"
+      }
     },
     "android": {
       "adaptiveIcon": {
