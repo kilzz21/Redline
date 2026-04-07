@@ -984,8 +984,33 @@ export default function CrewScreen({ navigation, route }) {
 
   const acceptCrewInvite = async (invite) => {
     try {
-      await updateDoc(doc(db, 'crews', invite.crewId), { members: arrayUnion(uid) });
-      await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'accepted' });
+      // Force-refresh token so Firestore security context is current.
+      if (auth.currentUser) await auth.currentUser.getIdToken(true);
+
+      console.log('[acceptInvite] invite.id:', invite.id);
+      console.log('[acceptInvite] invite.crewId:', invite.crewId);
+      console.log('[acceptInvite] invite.toUid:', invite.toUid);
+      console.log('[acceptInvite] auth uid:', auth.currentUser?.uid);
+      console.log('[acceptInvite] uid state:', uid);
+
+      // Step 1: add self to crew members
+      try {
+        await updateDoc(doc(db, 'crews', invite.crewId), { members: arrayUnion(uid) });
+        console.log('[acceptInvite] crew update success ✓');
+      } catch (crewErr) {
+        console.log('[acceptInvite] crew update FAILED — code:', crewErr.code, 'msg:', crewErr.message);
+        throw crewErr;
+      }
+
+      // Step 2: mark invite as accepted
+      try {
+        await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'accepted' });
+        console.log('[acceptInvite] crewInvites update success ✓');
+      } catch (invErr) {
+        console.log('[acceptInvite] crewInvites update FAILED — code:', invErr.code, 'msg:', invErr.message);
+        throw invErr;
+      }
+
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       Alert.alert('Failed', e.message);
