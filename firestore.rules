@@ -10,7 +10,8 @@ service cloud.firestore {
       allow write: if request.auth.uid == userId;
 
       match /drives/{driveId} {
-        allow read, write: if request.auth.uid == userId;
+        allow read: if request.auth != null;
+        allow write: if request.auth.uid == userId;
       }
     }
 
