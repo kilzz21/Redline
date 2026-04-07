@@ -143,7 +143,12 @@ function DestinationPin({ name }) {
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
 async function searchNominatim(query, userLat, userLng) {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=8&addressdetails=1`;
+  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=8&addressdetails=1`;
+  if (userLat != null && userLng != null) {
+    // Bias results toward the user's area; bounded=0 still allows global fallback
+    url += `&lat=${userLat}&lon=${userLng}`;
+    url += `&viewbox=${userLng - 0.5},${userLat - 0.5},${userLng + 0.5},${userLat + 0.5}&bounded=0`;
+  }
   const res = await fetch(url, { headers: { 'User-Agent': 'Redline/1.0' } });
   const data = await res.json();
   return data.map((r) => {
@@ -155,21 +160,33 @@ async function searchNominatim(query, userLat, userLng) {
   }).sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
 }
 
-function SetMeetupModal({ visible, onClose, onSet, userLocation, mapCenterRef }) {
+function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState([]);
   const [selected, setSelected] = useState(null);
   const [error, setError] = useState('');
+  const [gpsLocation, setGpsLocation] = useState(null);
+  const [gpsLocating, setGpsLocating] = useState(false);
   const debounceRef = useRef(null);
+
+  // Get a fresh GPS fix when the modal opens
+  useEffect(() => {
+    if (!visible) return;
+    setGpsLocating(true);
+    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
+      .then((loc) => setGpsLocation(loc.coords))
+      .catch(() => {}) // silently fall back to no location bias
+      .finally(() => setGpsLocating(false));
+  }, [visible]);
 
   const runSearch = useCallback(async (text) => {
     if (!text.trim() || text.trim().length < 2) { setResults([]); return; }
     setSearching(true);
     setError('');
     try {
-      const hits = await searchNominatim(text, userLocation?.latitude, userLocation?.longitude);
+      const hits = await searchNominatim(text, gpsLocation?.latitude, gpsLocation?.longitude);
       setResults(hits);
       if (!hits.length) setError('no results found');
     } catch {
@@ -254,11 +271,19 @@ function SetMeetupModal({ visible, onClose, onSet, userLocation, mapCenterRef })
             }
           </View>
 
-          {/* Drop pin button */}
-          <TouchableOpacity style={styles.dropPinBtn} onPress={dropPin} activeOpacity={0.7}>
-            <Ionicons name="pin-outline" size={14} color="#888" />
-            <Text style={styles.dropPinText}>drop pin at map center</Text>
-          </TouchableOpacity>
+          {/* GPS status + drop pin */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            {gpsLocating
+              ? <Text style={styles.dropPinText}>locating you...</Text>
+              : gpsLocation
+                ? <Text style={styles.dropPinText}>📍 results sorted by distance from you</Text>
+                : <Text style={styles.dropPinText}>results may not be sorted by distance</Text>
+            }
+            <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} onPress={dropPin} activeOpacity={0.7}>
+              <Ionicons name="pin-outline" size={14} color="#888" />
+              <Text style={styles.dropPinText}>drop pin</Text>
+            </TouchableOpacity>
+          </View>
 
           {/* Selected result */}
           {selected && (
@@ -799,9 +824,9 @@ export default function MapScreen({ navigation }) {
           maxZoomLevel={18}
           onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          {/* CartoDB Voyager — dark-ish but roads + labels clearly visible */}
+          {/* CartoDB Dark Matter Lite — dark grey base, visible roads */}
           <UrlTile
-            urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/rastertiles/voyager/{z}/{x}/{y}.png"
+            urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/dark_matter_lite/{z}/{x}/{y}.png"
             maximumZ={18}
             flipY={false}
             tileSize={256}
@@ -1106,7 +1131,6 @@ export default function MapScreen({ navigation }) {
         visible={showMeetupModal}
         onClose={() => setShowMeetupModal(false)}
         onSet={handleSetMeetup}
-        userLocation={location}
         mapCenterRef={mapCenterRef}
       />
     </View>
