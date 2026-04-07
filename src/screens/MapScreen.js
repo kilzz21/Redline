@@ -194,7 +194,7 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
     } finally {
       setSearching(false);
     }
-  }, [userLocation]);
+  }, [gpsLocation]);
 
   const onChangeText = (text) => {
     setQuery(text);
