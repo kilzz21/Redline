@@ -2,17 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput,
   Alert, Share, Image, ActivityIndicator, Modal, KeyboardAvoidingView,
-  Platform,
+  Platform, Animated, RefreshControl,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc,
   doc, documentId, serverTimestamp, getDocs, arrayUnion, arrayRemove,
 } from 'firebase/firestore';
+import * as Haptics from 'expo-haptics';
 import { auth, db } from '../config/firebase';
 import { useCrews } from '../hooks/useCrews';
 import { useAcceptedCrew } from '../hooks/useAcceptedCrew';
 import { requestJoinChannel } from '../utils/radioJoinRequest';
+import { SkeletonList } from '../components/SkeletonCard';
 
 const ORANGE = '#f97316';
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
@@ -37,6 +39,26 @@ function formatCarString(car) {
 function isOnline(profile) {
   const last = profile?.lastSeen?.toMillis?.() ?? 0;
   return Date.now() - last < 2 * 60 * 1000;
+}
+
+// ─── Pulsing Online Dot ───────────────────────────────────────────────────────
+
+function PulsingOnlineDot() {
+  const scale = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.sequence([
+      Animated.timing(scale, { toValue: 1.5, duration: 300, useNativeDriver: true }),
+      Animated.timing(scale, { toValue: 1, duration: 300, useNativeDriver: true }),
+    ]).start();
+  }, []);
+  return (
+    <Animated.View
+      style={[
+        { width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e' },
+        { transform: [{ scale }] },
+      ]}
+    />
+  );
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -82,57 +104,70 @@ function Checkbox({ checked, label, subLabel, onToggle }) {
 
 // ─── Crew card ────────────────────────────────────────────────────────────────
 
-function CrewCard({ crew, uid, onPress, onLongPress, onOpenRadio }) {
+function CrewCard({ crew, uid, onPress, onLongPress, onOpenRadio, index }) {
   const profiles = crew.memberProfiles || [];
   const onlineCount = profiles.filter(isOnline).length;
   const visibleAvatars = profiles.slice(0, 5);
   const extra = profiles.length - visibleAvatars.length;
 
-  return (
-    <TouchableOpacity
-      style={styles.crewCard}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      activeOpacity={0.75}
-      delayLongPress={400}
-    >
-      <View style={{ flex: 1 }}>
-        <Text style={styles.crewCardName}>{crew.name}</Text>
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(12)).current;
 
-        {/* Member avatars row */}
-        <View style={styles.avatarRow}>
-          {visibleAvatars.map((p, i) => (
-            <Avatar
-              key={p.id}
-              photoURL={p.photoURL}
-              name={p.name}
-              uid={p.id}
-              size={26}
-              style={{ marginLeft: i === 0 ? 0 : -8, borderWidth: 2, borderColor: '#1a1a1a' }}
-            />
-          ))}
-          {extra > 0 && (
-            <View style={styles.extraBubble}>
-              <Text style={styles.extraBubbleText}>+{extra}</Text>
+  useEffect(() => {
+    const delay = (index || 0) * 80;
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 300, delay, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 300, delay, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
+  return (
+    <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
+      <TouchableOpacity
+        style={styles.crewCard}
+        onPress={onPress}
+        onLongPress={onLongPress}
+        activeOpacity={0.75}
+        delayLongPress={400}
+      >
+        <View style={{ flex: 1 }}>
+          <Text style={styles.crewCardName} numberOfLines={1}>{crew.name}</Text>
+
+          {/* Member avatars row */}
+          <View style={styles.avatarRow}>
+            {visibleAvatars.map((p, i) => (
+              <Avatar
+                key={p.id}
+                photoURL={p.photoURL}
+                name={p.name}
+                uid={p.id}
+                size={26}
+                style={{ marginLeft: i === 0 ? 0 : -8, borderWidth: 2, borderColor: '#1a1a1a' }}
+              />
+            ))}
+            {extra > 0 && (
+              <View style={styles.extraBubble}>
+                <Text style={styles.extraBubbleText}>+{extra}</Text>
+              </View>
+            )}
+            <Text style={styles.memberCountText} numberOfLines={1}>
+              {profiles.length} member{profiles.length !== 1 ? 's' : ''}
+            </Text>
+          </View>
+
+          {onlineCount > 0 && (
+            <View style={styles.onlineRow}>
+              <PulsingOnlineDot />
+              <Text style={styles.onlineText}>{onlineCount} online</Text>
             </View>
           )}
-          <Text style={styles.memberCountText}>
-            {profiles.length} member{profiles.length !== 1 ? 's' : ''}
-          </Text>
         </View>
 
-        {onlineCount > 0 && (
-          <View style={styles.onlineRow}>
-            <View style={styles.onlineDotGreen} />
-            <Text style={styles.onlineText}>{onlineCount} online</Text>
-          </View>
-        )}
-      </View>
-
-      <TouchableOpacity style={styles.radioBtn} onPress={onOpenRadio} activeOpacity={0.8}>
-        <Text style={styles.radioBtnText}>radio</Text>
+        <TouchableOpacity style={styles.radioBtn} onPress={onOpenRadio} activeOpacity={0.8}>
+          <Text style={styles.radioBtnText}>radio</Text>
+        </TouchableOpacity>
       </TouchableOpacity>
-    </TouchableOpacity>
+    </Animated.View>
   );
 }
 
@@ -380,11 +415,11 @@ function CrewDetailModal({ crew, uid, connections, visible, onClose }) {
                     <Avatar photoURL={p.photoURL} name={p.name} uid={p.id} size={40} />
                     <View style={[styles.cardBody, { marginLeft: 12 }]}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Text style={styles.memberName}>{p.name || 'Unknown'}</Text>
+                        <Text style={styles.memberName} numberOfLines={1}>{p.name || 'Unknown'}</Text>
                         {p.id === uid && <Text style={styles.youLabel}>you</Text>}
                       </View>
-                      {p.username ? <Text style={styles.subText}>@{p.username}</Text> : null}
-                      {formatCarString(p.car) ? <Text style={styles.subText}>{formatCarString(p.car)}</Text> : null}
+                      {p.username ? <Text style={styles.subText} numberOfLines={1}>@{p.username}</Text> : null}
+                      {formatCarString(p.car) ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(p.car)}</Text> : null}
                     </View>
                     <View style={[styles.onlineDotGreen, { backgroundColor: online ? '#22c55e' : '#333' }]} />
                   </View>
@@ -431,6 +466,8 @@ export default function CrewScreen({ navigation, route }) {
   const crews = useCrews();
   const connections = useAcceptedCrew();
 
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [myProfile, setMyProfile] = useState(null);
   const [pendingInvites, setPendingInvites] = useState([]);
   const [sentUids, setSentUids] = useState(new Set());
@@ -440,8 +477,21 @@ export default function CrewScreen({ navigation, route }) {
   const [searchText, setSearchText] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [deepLinkUser, setDeepLinkUser] = useState(null); // user fetched from invite link
+  const [deepLinkUser, setDeepLinkUser] = useState(null);
   const searchTimer = useRef(null);
+
+  // Loading skeleton — hide after first data arrives
+  useEffect(() => {
+    if (crews.length >= 0 || connections.length >= 0) {
+      const t = setTimeout(() => setLoading(false), 300);
+      return () => clearTimeout(t);
+    }
+  }, [crews, connections]);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 800);
+  };
 
   // Handle redline://invite/USER_ID deep link — fetch and surface that user
   useEffect(() => {
@@ -518,6 +568,7 @@ export default function CrewScreen({ navigation, route }) {
         status: 'pending',
         createdAt: serverTimestamp(),
       });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       Alert.alert('Failed to send invite', e.message);
     }
@@ -526,6 +577,9 @@ export default function CrewScreen({ navigation, route }) {
   const respondToInvite = async (inviteId, status) => {
     try {
       await updateDoc(doc(db, 'invites', inviteId), { status });
+      if (status === 'accepted') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
     } catch (e) {
       Alert.alert('Failed', e.message);
     }
@@ -543,6 +597,7 @@ export default function CrewScreen({ navigation, route }) {
   };
 
   const openRadio = (crew) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     requestJoinChannel(crew.id);
     navigation.navigate('Radio');
   };
@@ -606,6 +661,14 @@ export default function CrewScreen({ navigation, route }) {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor="#f97316"
+            colors={['#f97316']}
+          />
+        }
       >
 
         {/* ── Header ─────────────────────────────────── */}
@@ -613,7 +676,10 @@ export default function CrewScreen({ navigation, route }) {
           <Text style={styles.headerTitle}>crew</Text>
           <TouchableOpacity
             style={styles.createBtn}
-            onPress={() => setShowCreateModal(true)}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowCreateModal(true);
+            }}
             activeOpacity={0.8}
           >
             <Text style={styles.createBtnText}>+ create crew</Text>
@@ -647,6 +713,7 @@ export default function CrewScreen({ navigation, route }) {
                 onPress={() => setDeepLinkUser(null)}
                 style={{ padding: 8, marginLeft: 4 }}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                activeOpacity={0.7}
               >
                 <Text style={{ color: '#444', fontSize: 16 }}>✕</Text>
               </TouchableOpacity>
@@ -659,26 +726,32 @@ export default function CrewScreen({ navigation, route }) {
           your crews{crews.length > 0 ? ` · ${crews.length}` : ''}
         </Text>
 
-        {crews.length === 0 ? (
+        {loading ? (
+          <SkeletonList count={3} height={72} />
+        ) : crews.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>no crews yet</Text>
             <Text style={styles.emptySub}>
-              create a crew to get a private group radio channel and shared map view
+              create a crew to get started
             </Text>
             <TouchableOpacity
               style={styles.emptyAction}
-              onPress={() => setShowCreateModal(true)}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowCreateModal(true);
+              }}
               activeOpacity={0.8}
             >
               <Text style={styles.emptyActionText}>create your first crew</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          crews.map((crew) => (
+          crews.map((crew, i) => (
             <CrewCard
               key={crew.id}
               crew={crew}
               uid={uid}
+              index={i}
               onPress={() => openCrewDetail(crew)}
               onLongPress={() => handleCrewLongPress(crew)}
               onOpenRadio={() => openRadio(crew)}
@@ -711,8 +784,8 @@ export default function CrewScreen({ navigation, route }) {
             <View key={user.id} style={styles.card}>
               <Avatar photoURL={user.photoURL} name={user.name} uid={user.id} size={40} />
               <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                <Text style={styles.memberName}>{user.name}</Text>
-                {user.username ? <Text style={styles.subText}>@{user.username}</Text> : null}
+                <Text style={styles.memberName} numberOfLines={1}>{user.name}</Text>
+                {user.username ? <Text style={styles.subText} numberOfLines={1}>@{user.username}</Text> : null}
               </View>
               {state === 'connected' ? (
                 <Text style={styles.connectedText}>connected</Text>
@@ -727,7 +800,9 @@ export default function CrewScreen({ navigation, route }) {
           );
         })}
 
-        {connections.length === 0 && !searchText ? (
+        {loading ? (
+          <SkeletonList count={2} height={60} />
+        ) : connections.length === 0 && !searchText ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptySub}>
               search for people by username to add individual connections
@@ -742,11 +817,11 @@ export default function CrewScreen({ navigation, route }) {
               <Avatar photoURL={c.photoURL} name={c.name} uid={c.id} size={40} />
               <View style={[styles.cardBody, { marginLeft: 12 }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={styles.memberName}>{c.name}</Text>
+                  <Text style={styles.memberName} numberOfLines={1}>{c.name}</Text>
                   {isOnline(c) && <View style={styles.onlineDotGreen} />}
                 </View>
-                {c.username ? <Text style={styles.subText}>@{c.username}</Text> : null}
-                {formatCarString(c.car) ? <Text style={styles.subText}>{formatCarString(c.car)}</Text> : null}
+                {c.username ? <Text style={styles.subText} numberOfLines={1}>@{c.username}</Text> : null}
+                {formatCarString(c.car) ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(c.car)}</Text> : null}
               </View>
             </View>
           ))
@@ -760,7 +835,7 @@ export default function CrewScreen({ navigation, route }) {
               <View key={invite.id} style={styles.card}>
                 <Avatar name={invite.fromName} uid={invite.fromUid} size={40} />
                 <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                  <Text style={styles.memberName}>{invite.fromName}</Text>
+                  <Text style={styles.memberName} numberOfLines={1}>{invite.fromName}</Text>
                   <Text style={styles.subText}>wants to connect</Text>
                 </View>
                 <View style={{ flexDirection: 'row', gap: 8 }}>

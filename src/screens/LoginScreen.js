@@ -2,12 +2,24 @@ import { useState } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
+  TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { signInWithEmailAndPassword } from 'firebase/auth';
+import * as Haptics from 'expo-haptics';
 import { auth } from '../config/firebase';
 
 const ORANGE = '#f97316';
+
+function friendlyAuthError(code) {
+  switch (code) {
+    case 'auth/wrong-password': return 'Incorrect password. Please try again.';
+    case 'auth/user-not-found': return 'No account found with that email.';
+    case 'auth/invalid-email': return 'Please enter a valid email address.';
+    case 'auth/too-many-requests': return 'Too many attempts. Please wait a moment and try again.';
+    default: return 'Something went wrong. Please try again.';
+  }
+}
 
 export default function LoginScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -16,6 +28,7 @@ export default function LoginScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (!email || !password) {
       Alert.alert('Missing fields', 'Please enter your email and password.');
       return;
@@ -24,74 +37,75 @@ export default function LoginScreen({ navigation }) {
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      // onAuthStateChanged in App.js will detect the user and navigate to main app
     } catch (error) {
-      Alert.alert('Log in failed', error.message);
+      Alert.alert('Log in failed', friendlyAuthError(error.code));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <View style={[styles.inner, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 32 }]}>
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <KeyboardAvoidingView
+        style={styles.root}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <View style={[styles.inner, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 32 }]}>
 
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Text style={styles.backText}>← back</Text>
-        </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
+            <Text style={styles.backText}>← back</Text>
+          </TouchableOpacity>
 
-        <Text style={styles.logoSmall}>REDLINE</Text>
-        <Text style={styles.title}>log in</Text>
+          <Text style={styles.logoSmall}>REDLINE</Text>
+          <Text style={styles.title}>log in</Text>
 
-        <TextInput
-          style={styles.input}
-          placeholder="email"
-          placeholderTextColor="#444"
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="password"
-          placeholderTextColor="#444"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
+          <TextInput
+            style={styles.input}
+            placeholder="email"
+            placeholderTextColor="#444"
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="password"
+            placeholderTextColor="#444"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
 
-        <TouchableOpacity style={styles.forgotWrap}>
-          <Text style={styles.forgotText}>forgot password?</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.forgotWrap} activeOpacity={0.7}>
+            <Text style={styles.forgotText}>forgot password?</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.btnPrimary, loading && styles.btnDisabled]}
-          onPress={handleLogin}
-          disabled={loading}
-          activeOpacity={0.85}
-        >
-          {loading
-            ? <ActivityIndicator color="#fff" />
-            : <Text style={styles.btnPrimaryText}>log in</Text>
-          }
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.btnPrimary, loading && styles.btnDisabled]}
+            onPress={handleLogin}
+            disabled={loading}
+            activeOpacity={0.7}
+          >
+            {loading
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.btnPrimaryText}>log in</Text>
+            }
+          </TouchableOpacity>
 
-        <TouchableOpacity onPress={() => navigation.navigate('SignUp')}>
-          <Text style={styles.switchLink}>
-            no account?{' '}
-            <Text style={styles.switchLinkOrange}>get started</Text>
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity onPress={() => navigation.navigate('SignUp')} activeOpacity={0.7}>
+            <Text style={styles.switchLink}>
+              no account?{' '}
+              <Text style={styles.switchLinkOrange}>get started</Text>
+            </Text>
+          </TouchableOpacity>
 
-      </View>
-    </KeyboardAvoidingView>
+        </View>
+      </KeyboardAvoidingView>
+    </TouchableWithoutFeedback>
   );
 }
 

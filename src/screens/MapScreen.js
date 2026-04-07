@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Linking, Animated, Easing, Image, ScrollView,
+  Linking, Animated, Easing, Image, ScrollView, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, UrlTile } from 'react-native-maps';
+import MapView, { Marker, Polyline, UrlTile } from 'react-native-maps';
 import * as Location from 'expo-location';
+import * as Haptics from 'expo-haptics';
 import {
   doc, setDoc, addDoc, collection, serverTimestamp,
 } from 'firebase/firestore';
@@ -19,6 +20,8 @@ const ORANGE = '#f97316';
 const SPEED_THRESHOLD_MPH = 5;
 const PRE_DRIVE_MS = 2 * 60 * 1000;
 const STOP_DELAY_MS = 30 * 1000;
+const TRAIL_MAX_AGE_MS = 5 * 60 * 1000; // 5-minute trail
+const TRAIL_MAX_POINTS = 30;
 
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
 
@@ -43,12 +46,7 @@ function getMemberColor(uid) {
 
 function getInitials(name) {
   if (!name) return '??';
-  return name
-    .split(' ')
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
 function toMph(ms) {
@@ -88,26 +86,32 @@ function PulsingDot() {
 
 export default function MapScreen({ navigation }) {
   const [location, setLocation] = useState(null);
+  const [locating, setLocating] = useState(true); // true until first GPS fix
   const [permDenied, setPermDenied] = useState(false);
   const [selectedCrewId, setSelectedCrewId] = useState(null);
+  const [currentSpeedMph, setCurrentSpeedMph] = useState(0);
+  const [autoZoomed, setAutoZoomed] = useState(false);
 
   const uid = auth.currentUser?.uid;
   const crews = useCrews();
   const { channelName } = useMic();
 
-  // Keep a ref so the drive-save closure can always read the latest crews
   const crewsRef = useRef([]);
   crewsRef.current = crews;
 
   const locationRef = useRef(null);
   const watchRef = useRef(null);
+  const mapRef = useRef(null);
+
+  // Trail history: uid → [{ latitude, longitude, t }]
+  const trailsRef = useRef({});
 
   const driveStateRef = useRef('IDLE');
   const driveDataRef = useRef(null);
   const preDriveTimerRef = useRef(null);
   const stopTimerRef = useRef(null);
 
-  // ── GPS + Firestore push + drive detection ────────────────────────────────
+  // ── GPS + Firestore + drive detection ─────────────────────────────────────
 
   useEffect(() => {
     let firestoreInterval;
@@ -136,41 +140,27 @@ export default function MapScreen({ navigation }) {
       driveStateRef.current = 'IDLE';
       clearTimeout(stopTimerRef.current);
       stopTimerRef.current = null;
-
       const drive = driveDataRef.current;
       driveDataRef.current = null;
       const currentUid = auth.currentUser?.uid;
       if (!drive || !currentUid || drive.coords.length < 2) return;
-
       const endTime = new Date();
       const { startTime, coords, speeds, topSpeed } = drive;
-
       let distanceMiles = 0;
       for (let i = 1; i < coords.length; i++) {
-        distanceMiles += haversineMiles(
-          coords[i - 1].lat, coords[i - 1].lng,
-          coords[i].lat, coords[i].lng
-        );
+        distanceMiles += haversineMiles(coords[i - 1].lat, coords[i - 1].lng, coords[i].lat, coords[i].lng);
       }
-
-      const avgSpeed = speeds.length
-        ? speeds.reduce((a, b) => a + b, 0) / speeds.length
-        : 0;
-
-      // Tag whether crew members were present when drive started
+      const avgSpeed = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
       const withCrew = crewsRef.current.length > 0;
-
       try {
         await addDoc(collection(db, 'users', currentUid, 'drives'), {
-          startTime,
-          endTime,
+          startTime, endTime,
           topSpeed: Math.round(topSpeed * 10) / 10,
           avgSpeed: Math.round(avgSpeed * 10) / 10,
           distance: Math.round(distanceMiles * 100) / 100,
           coordinates: coords,
           withCrew,
         });
-        console.log(`Drive saved: ${distanceMiles.toFixed(2)} mi, top ${topSpeed.toFixed(0)} mph, withCrew: ${withCrew}`);
       } catch (e) {
         console.warn('Drive save failed:', e.message);
       }
@@ -178,21 +168,16 @@ export default function MapScreen({ navigation }) {
 
     function processDrive(coords, speedMph) {
       const state = driveStateRef.current;
-
       if (state === 'IDLE') {
         if (speedMph >= SPEED_THRESHOLD_MPH) {
           driveStateRef.current = 'PRE_DRIVE';
           driveDataRef.current = {
             startTime: new Date(),
             coords: [{ lat: coords.latitude, lng: coords.longitude, t: Date.now() }],
-            speeds: [speedMph],
-            topSpeed: speedMph,
+            speeds: [speedMph], topSpeed: speedMph,
           };
           preDriveTimerRef.current = setTimeout(() => {
-            if (driveStateRef.current === 'PRE_DRIVE') {
-              driveStateRef.current = 'DRIVING';
-              console.log('Drive started');
-            }
+            if (driveStateRef.current === 'PRE_DRIVE') driveStateRef.current = 'DRIVING';
           }, PRE_DRIVE_MS);
         }
       } else if (state === 'PRE_DRIVE') {
@@ -210,10 +195,7 @@ export default function MapScreen({ navigation }) {
           driveDataRef.current.coords.push({ lat: coords.latitude, lng: coords.longitude, t: Date.now() });
           driveDataRef.current.speeds.push(speedMph);
           if (speedMph > driveDataRef.current.topSpeed) driveDataRef.current.topSpeed = speedMph;
-          if (stopTimerRef.current) {
-            clearTimeout(stopTimerRef.current);
-            stopTimerRef.current = null;
-          }
+          if (stopTimerRef.current) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
         } else if (!stopTimerRef.current) {
           driveStateRef.current = 'STOPPING';
           stopTimerRef.current = setTimeout(() => saveDrive(), STOP_DELAY_MS);
@@ -232,10 +214,22 @@ export default function MapScreen({ navigation }) {
 
     async function start() {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') { setPermDenied(true); return; }
-
+      if (status !== 'granted') {
+        setPermDenied(true);
+        setLocating(false);
+        Alert.alert(
+          'Location needed',
+          'Redline uses your location to show your position on the map and log drives. Enable it in Settings.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        );
+        return;
+      }
       const initial = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       setLocation(initial.coords);
+      setLocating(false);
       locationRef.current = initial.coords;
 
       watchRef.current = await Location.watchPositionAsync(
@@ -243,7 +237,9 @@ export default function MapScreen({ navigation }) {
         (loc) => {
           setLocation(loc.coords);
           locationRef.current = loc.coords;
-          processDrive(loc.coords, toMph(loc.coords.speed));
+          const mph = toMph(loc.coords.speed);
+          setCurrentSpeedMph(Math.round(mph));
+          processDrive(loc.coords, mph);
         }
       );
 
@@ -274,12 +270,7 @@ export default function MapScreen({ navigation }) {
   const crewMembers = [];
   crews.forEach((crew) => {
     (crew.memberProfiles || []).forEach((p) => {
-      if (
-        !seenIds.has(p.id) &&
-        visibleMemberIds.has(p.id) &&
-        p.latitude != null &&
-        p.longitude != null
-      ) {
+      if (!seenIds.has(p.id) && visibleMemberIds.has(p.id) && p.latitude != null && p.longitude != null) {
         seenIds.add(p.id);
         crewMembers.push({
           id: p.id,
@@ -293,6 +284,34 @@ export default function MapScreen({ navigation }) {
       }
     });
   });
+
+  // Update trail history during render (ref mutation is safe here)
+  const now = Date.now();
+  crewMembers.forEach((m) => {
+    if (!trailsRef.current[m.id]) trailsRef.current[m.id] = [];
+    const trail = trailsRef.current[m.id];
+    const last = trail[trail.length - 1];
+    if (!last || last.latitude !== m.latitude || last.longitude !== m.longitude) {
+      trailsRef.current[m.id] = [
+        ...trail.filter((p) => now - p.t < TRAIL_MAX_AGE_MS).slice(-(TRAIL_MAX_POINTS - 1)),
+        { latitude: m.latitude, longitude: m.longitude, t: now },
+      ];
+    }
+  });
+
+  // Auto-zoom to fit all crew members on first load
+  useEffect(() => {
+    if (autoZoomed || crewMembers.length === 0 || !location || !mapRef.current) return;
+    const coords = [
+      { latitude: location.latitude, longitude: location.longitude },
+      ...crewMembers.map((m) => ({ latitude: m.latitude, longitude: m.longitude })),
+    ];
+    mapRef.current.fitToCoordinates(coords, {
+      edgePadding: { top: 60, right: 40, bottom: 60, left: 40 },
+      animated: true,
+    });
+    setAutoZoomed(true);
+  }, [crewMembers.length, location, autoZoomed]);
 
   const filterLabel = selectedCrewId
     ? (crews.find((c) => c.id === selectedCrewId)?.name ?? 'crew')
@@ -308,16 +327,22 @@ export default function MapScreen({ navigation }) {
     ? 'create a crew to see members here'
     : `just you · ${filterLabel}`;
 
-  const openWaze = () => Linking.openURL('waze://');
+  const allOffline = crews.length > 0 && crewMembers.length === 0 && !locating;
+
+  const openWaze = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Linking.openURL('waze://');
+  };
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
 
-      {/* ── Map (60%) ──────────────────────────────────────── */}
+      {/* ── Map (60%) ────────────────────────────────────── */}
       <View style={styles.mapWrap}>
         <MapView
+          ref={mapRef}
           style={styles.map}
           region={region}
           mapType="none"
@@ -343,6 +368,23 @@ export default function MapScreen({ navigation }) {
             </Marker>
           )}
 
+          {/* Crew trails */}
+          {crewMembers.map((m) => {
+            const trail = trailsRef.current[m.id] || [];
+            if (trail.length < 2) return null;
+            return (
+              <Polyline
+                key={`trail-${m.id}`}
+                coordinates={trail}
+                strokeColor={m.color}
+                strokeWidth={2}
+                lineDashPattern={[4, 4]}
+                opacity={0.45}
+              />
+            );
+          })}
+
+          {/* Crew markers */}
           {crewMembers.map((m) => (
             <Marker
               key={m.id}
@@ -362,6 +404,13 @@ export default function MapScreen({ navigation }) {
           ))}
         </MapView>
 
+        {/* "locating you..." overlay */}
+        {locating && (
+          <View style={styles.locatingBanner}>
+            <Text style={styles.locatingText}>locating you...</Text>
+          </View>
+        )}
+
         {/* Crew filter pills */}
         {crews.length > 0 && (
           <ScrollView
@@ -372,7 +421,7 @@ export default function MapScreen({ navigation }) {
           >
             <TouchableOpacity
               style={[styles.pill, selectedCrewId === null && styles.pillActive]}
-              onPress={() => setSelectedCrewId(null)}
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(null); }}
               activeOpacity={0.7}
             >
               <Text style={[styles.pillText, selectedCrewId === null && styles.pillTextActive]}>all</Text>
@@ -381,10 +430,10 @@ export default function MapScreen({ navigation }) {
               <TouchableOpacity
                 key={crew.id}
                 style={[styles.pill, selectedCrewId === crew.id && styles.pillActive]}
-                onPress={() => setSelectedCrewId(crew.id)}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(crew.id); }}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.pillText, selectedCrewId === crew.id && styles.pillTextActive]}>
+                <Text style={[styles.pillText, selectedCrewId === crew.id && styles.pillTextActive]} numberOfLines={1}>
                   {crew.name}
                 </Text>
               </TouchableOpacity>
@@ -392,33 +441,44 @@ export default function MapScreen({ navigation }) {
           </ScrollView>
         )}
 
+        {/* Speed pill — shows when moving above threshold */}
+        {currentSpeedMph >= SPEED_THRESHOLD_MPH && (
+          <View style={styles.speedPill}>
+            <Text style={styles.speedPillText}>{currentSpeedMph}</Text>
+            <Text style={styles.speedPillUnit}>mph</Text>
+          </View>
+        )}
+
         {/* Radio pill */}
         <TouchableOpacity
           style={styles.radioPill}
-          onPress={() => navigation.navigate('Radio')}
-          activeOpacity={0.8}
+          onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); navigation.navigate('Radio'); }}
+          activeOpacity={0.7}
         >
-          <Ionicons
-            name={channelName ? 'mic' : 'mic-outline'}
-            size={13}
-            color={channelName ? '#fff' : '#555'}
-          />
-          <Text style={[styles.radioPillText, !channelName && styles.radioPillTextOff]}>
+          <Ionicons name={channelName ? 'mic' : 'mic-outline'} size={13} color={channelName ? '#fff' : '#555'} />
+          <Text style={[styles.radioPillText, !channelName && styles.radioPillTextOff]} numberOfLines={1}>
             {channelName ?? 'join radio'}
           </Text>
         </TouchableOpacity>
 
         {permDenied && (
           <View style={styles.permBanner}>
-            <Text style={styles.permText}>Location permission denied — enable in Settings</Text>
+            <Text style={styles.permText}>Location denied — tap to open Settings</Text>
           </View>
         )}
       </View>
 
-      {/* ── Bottom sheet (40%) ─────────────────────────────── */}
+      {/* ── Bottom sheet (40%) ──────────────────────────── */}
       <View style={styles.sheet}>
 
-        <Text style={styles.sessionLabel}>{sessionLabel}</Text>
+        <Text style={styles.sessionLabel} numberOfLines={1}>{sessionLabel}</Text>
+
+        {/* "none of your crew is online" pill */}
+        {allOffline && (
+          <View style={styles.offlinePill}>
+            <Text style={styles.offlinePillText}>none of your crew is online</Text>
+          </View>
+        )}
 
         {crewMembers.map((m) => {
           const distMiles = location
@@ -436,16 +496,16 @@ export default function MapScreen({ navigation }) {
               <View style={styles.crewMeta}>
                 <View style={styles.crewNameRow}>
                   <View style={styles.onlineDot} />
-                  <Text style={styles.crewName}>{m.name}</Text>
+                  <Text style={styles.crewName} numberOfLines={1}>{m.name}</Text>
                 </View>
                 <Text style={styles.crewSpeed}>{m.speed} mph</Text>
               </View>
-              <Text style={styles.crewDistance}>{distLabel}</Text>
+              <Text style={styles.crewDistance} numberOfLines={1}>{distLabel}</Text>
             </View>
           );
         })}
 
-        {crewMembers.length === 0 && (
+        {crewMembers.length === 0 && !allOffline && (
           <Text style={styles.emptyCrewText}>no crew online · invite friends to start a convoy</Text>
         )}
 
@@ -457,8 +517,8 @@ export default function MapScreen({ navigation }) {
             <Text style={styles.wazeIconText}>W</Text>
           </View>
           <View style={styles.wazeTextWrap}>
-            <Text style={styles.wazeTitle}>navigate with Waze</Text>
-            <Text style={styles.wazeSub}>speed cams · police · Redline keeps logging</Text>
+            <Text style={styles.wazeTitle} numberOfLines={1}>navigate with Waze</Text>
+            <Text style={styles.wazeSub} numberOfLines={1}>speed cams · police · Redline keeps logging</Text>
           </View>
           <Text style={styles.chevron}>›</Text>
         </TouchableOpacity>
@@ -473,9 +533,21 @@ export default function MapScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#111' },
 
-  // Map
   mapWrap: { flex: 6 },
   map: { flex: 1 },
+
+  // "locating you" overlay
+  locatingBanner: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center', justifyContent: 'center',
+    pointerEvents: 'none',
+  },
+  locatingText: {
+    color: '#888', fontSize: 13, fontWeight: '500',
+    backgroundColor: 'rgba(17,17,17,0.75)',
+    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
+  },
+
   permBanner: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: '#1a1a1a', padding: 10, alignItems: 'center',
@@ -484,14 +556,8 @@ const styles = StyleSheet.create({
 
   // User dot
   dotWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  dotRing: {
-    position: 'absolute', width: 24, height: 24,
-    borderRadius: 12, backgroundColor: ORANGE,
-  },
-  dotCore: {
-    width: 12, height: 12, borderRadius: 6,
-    backgroundColor: ORANGE, borderWidth: 2, borderColor: '#fff',
-  },
+  dotRing: { position: 'absolute', width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE },
+  dotCore: { width: 12, height: 12, borderRadius: 6, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#fff' },
 
   // Crew markers
   crewMarker: {
@@ -503,19 +569,28 @@ const styles = StyleSheet.create({
   crewMarkerDot: { width: 8, height: 8, borderRadius: 4, marginRight: 5 },
   crewMarkerLabel: { color: '#fff', fontSize: 11, fontWeight: '600' },
 
-  // Crew filter pills
-  pillsContainer: {
-    position: 'absolute', top: 10, left: 0, right: 0,
-  },
+  // Filter pills
+  pillsContainer: { position: 'absolute', top: 10, left: 0, right: 0 },
   pillsContent: { paddingHorizontal: 12, gap: 8 },
   pill: {
-    paddingHorizontal: 14, paddingVertical: 6,
-    borderRadius: 20, backgroundColor: 'rgba(17,17,17,0.85)',
-    borderWidth: 1, borderColor: '#2a2a2a',
+    paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
+    backgroundColor: 'rgba(17,17,17,0.85)', borderWidth: 1, borderColor: '#2a2a2a',
+    maxWidth: 140,
   },
   pillActive: { backgroundColor: ORANGE, borderColor: ORANGE },
   pillText: { color: '#aaa', fontSize: 12, fontWeight: '600' },
   pillTextActive: { color: '#fff' },
+
+  // Speed pill
+  speedPill: {
+    position: 'absolute', bottom: 52, left: 14,
+    flexDirection: 'row', alignItems: 'baseline', gap: 3,
+    backgroundColor: 'rgba(17,17,17,0.88)',
+    borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6,
+    borderWidth: 1, borderColor: '#2a2a2a',
+  },
+  speedPillText: { color: ORANGE, fontSize: 18, fontWeight: '700' },
+  speedPillUnit: { color: '#888', fontSize: 11, fontWeight: '500' },
 
   // Radio pill
   radioPill: {
@@ -534,27 +609,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8,
     borderTopWidth: 1, borderTopColor: '#2a2a2a',
   },
-  sessionLabel: {
-    color: '#555', fontSize: 11, fontWeight: '500',
-    marginBottom: 10, letterSpacing: 0.3,
+  sessionLabel: { color: '#555', fontSize: 11, fontWeight: '500', marginBottom: 10, letterSpacing: 0.3 },
+
+  // "none online" pill
+  offlinePill: {
+    alignSelf: 'flex-start', backgroundColor: '#1a1a1a',
+    borderRadius: 20, paddingHorizontal: 12, paddingVertical: 5,
+    borderWidth: 0.5, borderColor: '#2a2a2a', marginBottom: 10,
   },
-  emptyCrewText: {
-    color: '#333', fontSize: 11, marginBottom: 10, fontStyle: 'italic',
-  },
+  offlinePillText: { color: '#444', fontSize: 11 },
+
+  emptyCrewText: { color: '#333', fontSize: 11, marginBottom: 10, fontStyle: 'italic' },
 
   // Crew rows
   crewRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  avatar: {
-    width: 34, height: 34, borderRadius: 17,
-    alignItems: 'center', justifyContent: 'center', marginRight: 10,
-  },
+  avatar: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   avatarText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   crewMeta: { flex: 1 },
   crewNameRow: { flexDirection: 'row', alignItems: 'center' },
-  onlineDot: {
-    width: 6, height: 6, borderRadius: 3,
-    backgroundColor: '#22c55e', marginRight: 5,
-  },
+  onlineDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e', marginRight: 5 },
   crewName: { color: '#fff', fontSize: 14, fontWeight: '600' },
   crewSpeed: { color: '#888', fontSize: 12, marginTop: 1 },
   crewDistance: { color: '#555', fontSize: 12 },
@@ -563,11 +636,7 @@ const styles = StyleSheet.create({
 
   // Waze
   wazeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  wazeIcon: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: '#1a6efc', alignItems: 'center',
-    justifyContent: 'center', marginRight: 10,
-  },
+  wazeIcon: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#1a6efc', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   wazeIconText: { color: '#fff', fontSize: 14, fontWeight: '800' },
   wazeTextWrap: { flex: 1 },
   wazeTitle: { color: '#fff', fontSize: 13, fontWeight: '600' },

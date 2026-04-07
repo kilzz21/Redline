@@ -1,6 +1,7 @@
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import { Text, StyleSheet } from 'react-native';
+import { Text, TouchableOpacity, StyleSheet } from 'react-native';
+import * as Haptics from 'expo-haptics';
 
 import MapScreen from '../screens/MapScreen';
 import DrivesScreen from '../screens/DrivesScreen';
@@ -9,19 +10,30 @@ import ProfileScreen from '../screens/ProfileScreen';
 import RadioScreen from '../screens/RadioScreen';
 
 const Tab = createBottomTabNavigator();
-
 const ORANGE = '#f97316';
 const INACTIVE = '#555';
 
 function RedlineHeader() {
-  return <Text style={styles.headerTitle}>REDLINE</Text>;
+  return (
+    <TouchableOpacity
+      onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
+      activeOpacity={0.7}
+    >
+      <Text style={styles.headerTitle}>REDLINE</Text>
+    </TouchableOpacity>
+  );
 }
 
 export default function TabNavigator() {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
-        headerStyle: { backgroundColor: '#0d0d0d', shadowColor: 'transparent', elevation: 0, borderBottomWidth: 0 },
+        headerStyle: {
+          backgroundColor: '#0d0d0d',
+          shadowColor: 'transparent',
+          elevation: 0,
+          borderBottomWidth: 0,
+        },
         headerStatusBarHeight: 0,
         headerTitleAlign: 'center',
         headerTitle: () => <RedlineHeader />,
@@ -36,7 +48,7 @@ export default function TabNavigator() {
         tabBarActiveTintColor: ORANGE,
         tabBarInactiveTintColor: INACTIVE,
         tabBarLabelStyle: { fontSize: 10, fontWeight: '600' },
-        tabBarIcon: ({ focused, color, size }) => {
+        tabBarIcon: ({ focused, color }) => {
           const icons = {
             Map: focused ? 'location' : 'location-outline',
             Drives: focused ? 'stats-chart' : 'stats-chart-outline',
@@ -44,7 +56,7 @@ export default function TabNavigator() {
             Profile: focused ? 'person' : 'person-outline',
             Radio: focused ? 'mic' : 'mic-outline',
           };
-          return <Ionicons name={icons[route.name]} size={22} color={color} />;
+          return <Ionicons name={icons[route.name]} size={focused ? 24 : 20} color={color} />;
         },
       })}
     >

@@ -6,12 +6,23 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as Haptics from 'expo-haptics';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
 import { uploadProfilePicture } from '../utils/uploadProfilePicture';
 
 const ORANGE = '#f97316';
+
+function friendlyAuthError(code) {
+  switch (code) {
+    case 'auth/wrong-password': return 'Incorrect password. Please try again.';
+    case 'auth/user-not-found': return 'No account found with that email.';
+    case 'auth/invalid-email': return 'Please enter a valid email address.';
+    case 'auth/too-many-requests': return 'Too many attempts. Please wait a moment and try again.';
+    default: return 'Something went wrong. Please try again.';
+  }
+}
 
 function Field({ placeholder, value, onChangeText, secureTextEntry, keyboardType, autoCapitalize }) {
   return (
@@ -70,12 +81,15 @@ export default function SignUpScreen({ navigation }) {
   };
 
   const handleSignUp = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (!name || !username || !email || !password) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Missing fields', 'Please fill in your name, username, email, and password.');
       return;
     }
     const cleanUsername = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
     if (cleanUsername.length < 3) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Invalid username', 'Username must be at least 3 characters (letters, numbers, underscores).');
       return;
     }
@@ -105,9 +119,8 @@ export default function SignUpScreen({ navigation }) {
         photoURL,
         createdAt: serverTimestamp(),
       });
-      // onAuthStateChanged in App.js handles navigation
     } catch (error) {
-      Alert.alert('Sign up failed', error.message);
+      Alert.alert('Sign up failed', friendlyAuthError(error.code));
     } finally {
       setLoading(false);
     }
@@ -128,15 +141,14 @@ export default function SignUpScreen({ navigation }) {
         showsVerticalScrollIndicator={false}
       >
 
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
           <Text style={styles.backText}>← back</Text>
         </TouchableOpacity>
 
         <Text style={styles.logoSmall}>REDLINE</Text>
         <Text style={styles.title}>create account</Text>
 
-        {/* Profile picture picker */}
-        <TouchableOpacity style={styles.pickerWrap} onPress={pickImage} activeOpacity={0.8}>
+        <TouchableOpacity style={styles.pickerWrap} onPress={pickImage} activeOpacity={0.7}>
           {profilePicUri ? (
             <Image source={{ uri: profilePicUri }} style={styles.pickerImage} />
           ) : (
@@ -200,7 +212,7 @@ export default function SignUpScreen({ navigation }) {
           style={[styles.btnPrimary, loading && styles.btnDisabled]}
           onPress={handleSignUp}
           disabled={loading}
-          activeOpacity={0.85}
+          activeOpacity={0.7}
         >
           {loading
             ? <ActivityIndicator color="#fff" />
@@ -208,7 +220,7 @@ export default function SignUpScreen({ navigation }) {
           }
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={() => navigation.navigate('Login')}>
+        <TouchableOpacity onPress={() => navigation.navigate('Login')} activeOpacity={0.7}>
           <Text style={styles.switchLink}>
             already have an account?{' '}
             <Text style={styles.switchLinkOrange}>log in</Text>
@@ -253,7 +265,6 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
 
-  // Profile picture picker
   pickerWrap: {
     alignSelf: 'center',
     marginBottom: 28,

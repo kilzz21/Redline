@@ -8,6 +8,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './src/config/firebase';
 import { MicProvider } from './src/context/MicContext';
 import MicBar from './src/components/MicBar';
+import OfflineBanner from './src/components/OfflineBanner';
 import SplashScreen from './src/screens/SplashScreen';
 import AuthNavigator from './src/navigation/AuthNavigator';
 import TabNavigator from './src/navigation/TabNavigator';
@@ -69,6 +70,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <MicProvider>
+        <OfflineBanner />
         <StatusBar style="light" />
         {user && <MicBar />}
         <NavigationContainer ref={navigationRef} linking={user ? linking : undefined}>

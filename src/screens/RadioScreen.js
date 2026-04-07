@@ -6,6 +6,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { useFocusEffect } from '@react-navigation/native';
+import * as Haptics from 'expo-haptics';
 import {
   createAgoraRtcEngine,
   ChannelProfileType,
@@ -274,6 +275,9 @@ export default function RadioScreen() {
         });
       }
 
+      // Haptic on successful join
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
       // Auto-refresh token at 55 minutes
       clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = setTimeout(async () => {
@@ -287,6 +291,7 @@ export default function RadioScreen() {
       }, 55 * 60 * 1000);
 
     } catch (e) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Could not join channel', e.message);
       console.error('[Agora] joinChannel failed:', e);
     } finally {
@@ -298,6 +303,7 @@ export default function RadioScreen() {
   joinChannelCallbackRef.current = joinChannel;
 
   const leaveChannel = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     clearTimeout(refreshTimerRef.current);
     if (uid && joinedChannel) {
       await deleteDoc(doc(db, 'crews', joinedChannel, 'presence', uid)).catch(() => {});
@@ -329,12 +335,14 @@ export default function RadioScreen() {
 
   const onPressInHold = () => {
     if (!joinedChannel) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     engineRef.current?.muteLocalAudioStream(false);
     setTalking(true);
     setMicOn(true);
   };
 
   const onPressOutHold = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     engineRef.current?.muteLocalAudioStream(true);
     setTalking(false);
     setMicOn(false);
@@ -343,6 +351,9 @@ export default function RadioScreen() {
   const toggleOpenMic = () => {
     if (!joinedChannel) return;
     const next = !isMicOn;
+    if (next) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
     engineRef.current?.muteLocalAudioStream(!next);
     setIsMicOn(next);
     setMicOn(next);
@@ -384,7 +395,7 @@ export default function RadioScreen() {
         <View style={styles.emptyChannels}>
           <Text style={styles.emptyChannelsTitle}>no channels yet</Text>
           <Text style={styles.emptyChannelsSub}>
-            create a crew in the Crew tab to get a private voice channel
+            create a crew in the Crew tab to start talking
           </Text>
         </View>
       ) : (
@@ -400,8 +411,8 @@ export default function RadioScreen() {
             >
               <View style={[styles.channelDot, { backgroundColor: ch.onlineCount > 0 ? '#22c55e' : '#333' }]} />
               <View style={styles.channelMeta}>
-                <Text style={styles.channelName}>{ch.name}</Text>
-                <Text style={styles.channelSub}>
+                <Text style={styles.channelName} numberOfLines={1}>{ch.name}</Text>
+                <Text style={styles.channelSub} numberOfLines={1}>
                   {ch.memberProfiles.length} member{ch.memberProfiles.length !== 1 ? 's' : ''}
                   {ch.onlineCount > 0 ? ` · ${ch.onlineCount} online` : ''}
                 </Text>
@@ -416,6 +427,10 @@ export default function RadioScreen() {
             </TouchableOpacity>
           );
         })
+      )}
+
+      {tokenLoading && (
+        <Text style={styles.connectingText}>connecting...</Text>
       )}
 
       {/* ── Members in channel ─────────────────────────── */}
@@ -570,6 +585,10 @@ const styles = StyleSheet.create({
   channelSub: { color: '#555', fontSize: 10, marginTop: 2 },
   channelAction: { color: '#555', fontSize: 11 },
   channelActionActive: { color: ORANGE, fontWeight: '600' },
+
+  connectingText: {
+    color: '#555', fontSize: 11, textAlign: 'center', marginTop: 4, marginBottom: 6,
+  },
 
   // Channel member presence row
   channelMembersRow: {

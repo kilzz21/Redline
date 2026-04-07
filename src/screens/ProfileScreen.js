@@ -4,10 +4,13 @@ import {
   TouchableOpacity, Modal, TextInput, Image, Alert, KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { doc, collection, onSnapshot, updateDoc } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
+import * as Haptics from 'expo-haptics';
 import { auth, db } from '../config/firebase';
 import { uploadProfilePicture } from '../utils/uploadProfilePicture';
+import SettingsScreen from './SettingsScreen';
 
 const ORANGE = '#f97316';
 
@@ -247,6 +250,7 @@ export default function ProfileScreen() {
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loadingDrives, setLoadingDrives] = useState(true);
   const [editVisible, setEditVisible] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   const uid = auth.currentUser?.uid;
 
@@ -311,11 +315,11 @@ export default function ProfileScreen() {
         {/* ── Top section ────────────────────────────────── */}
         <View style={styles.topSection}>
           <TouchableOpacity
-            style={styles.editBtn}
-            onPress={() => setEditVisible(true)}
+            style={styles.settingsBtn}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSettingsVisible(true); }}
             activeOpacity={0.7}
           >
-            <Text style={styles.editBtnText}>edit</Text>
+            <Ionicons name="settings-outline" size={18} color="#555" />
           </TouchableOpacity>
 
           <Avatar photoURL={profile?.photoURL} name={name} size={72} />
@@ -407,6 +411,12 @@ export default function ProfileScreen() {
         profile={profile}
         onClose={() => setEditVisible(false)}
       />
+
+      <SettingsScreen
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
+        onEditProfile={() => { setSettingsVisible(false); setEditVisible(true); }}
+      />
     </>
   );
 }
@@ -423,13 +433,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#141414', paddingVertical: 24,
     paddingHorizontal: 20, alignItems: 'center',
   },
-  editBtn: {
+  settingsBtn: {
     position: 'absolute', top: 16, right: 16,
-    paddingHorizontal: 12, paddingVertical: 6,
-    backgroundColor: '#1a1a1a', borderRadius: 8,
-    borderWidth: 0.5, borderColor: '#2a2a2a',
+    width: 34, height: 34, borderRadius: 17,
+    backgroundColor: '#1a1a1a', borderWidth: 0.5, borderColor: '#2a2a2a',
+    alignItems: 'center', justifyContent: 'center',
   },
-  editBtnText: { color: '#888', fontSize: 12, fontWeight: '600' },
 
   avatarFallback: {
     backgroundColor: ORANGE, alignItems: 'center', justifyContent: 'center',

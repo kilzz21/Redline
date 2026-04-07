@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
   TouchableOpacity, ActivityIndicator, Alert,
+  Animated, RefreshControl,
 } from 'react-native';
 import { Svg, Polyline, Circle } from 'react-native-svg';
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import * as Haptics from 'expo-haptics';
 import { auth, db } from '../config/firebase';
+import { SkeletonList } from '../components/SkeletonCard';
 
 const ORANGE = '#f97316';
 
@@ -145,41 +148,53 @@ function DriveCard({ drive }) {
   const name = driveName(drive.startTime);
   const dist = drive.distance ?? 0;
 
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(16)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 350, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
   return (
-    <View style={styles.card}>
-      <RouteThumbnail coordinates={drive.coordinates} />
-      <View style={styles.driveNameRow}>
-        <Text style={styles.driveName}>{name}</Text>
-        {drive.withCrew && (
-          <View style={styles.crewTag}>
-            <Text style={styles.crewTagText}>crew</Text>
+    <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
+      <View style={styles.card}>
+        <RouteThumbnail coordinates={drive.coordinates} />
+        <View style={styles.driveNameRow}>
+          <Text style={styles.driveName} numberOfLines={1}>{name}</Text>
+          {drive.withCrew && (
+            <View style={styles.crewTag}>
+              <Text style={styles.crewTagText}>crew</Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.metaRow}>
+          <Text style={styles.metaText} numberOfLines={1}>{day}{dur ? ` · ${dur}` : ''}</Text>
+          <Text style={styles.metaText} numberOfLines={1}>{dist.toFixed(1)} mi</Text>
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.statsRow}>
+          <View style={styles.stat}>
+            <Text style={[styles.statValue, { color: ORANGE }]}>
+              {Math.round(drive.topSpeed ?? 0)}
+            </Text>
+            <Text style={styles.statLabel} numberOfLines={1}>top mph</Text>
           </View>
-        )}
-      </View>
-      <View style={styles.metaRow}>
-        <Text style={styles.metaText}>{day}{dur ? ` · ${dur}` : ''}</Text>
-        <Text style={styles.metaText}>{dist.toFixed(1)} mi</Text>
-      </View>
-      <View style={styles.divider} />
-      <View style={styles.statsRow}>
-        <View style={styles.stat}>
-          <Text style={[styles.statValue, { color: ORANGE }]}>
-            {Math.round(drive.topSpeed ?? 0)}
-          </Text>
-          <Text style={styles.statLabel}>top mph</Text>
-        </View>
-        <View style={styles.stat}>
-          <Text style={styles.statValueWhite}>
-            {Math.round(drive.avgSpeed ?? 0)}
-          </Text>
-          <Text style={styles.statLabel}>avg mph</Text>
-        </View>
-        <View style={styles.stat}>
-          <Text style={styles.statValueWhite}>{dist.toFixed(1)}mi</Text>
-          <Text style={styles.statLabel}>dist</Text>
+          <View style={styles.stat}>
+            <Text style={styles.statValueWhite}>
+              {Math.round(drive.avgSpeed ?? 0)}
+            </Text>
+            <Text style={styles.statLabel} numberOfLines={1}>avg mph</Text>
+          </View>
+          <View style={styles.stat}>
+            <Text style={styles.statValueWhite}>{dist.toFixed(1)}mi</Text>
+            <Text style={styles.statLabel} numberOfLines={1}>dist</Text>
+          </View>
         </View>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -189,6 +204,8 @@ export default function DrivesScreen() {
   const [drives, setDrives] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshCounter, setRefreshCounter] = useState(0);
 
   useEffect(() => {
     const uid = auth.currentUser?.uid;
@@ -208,7 +225,13 @@ export default function DrivesScreen() {
     });
 
     return unsub;
-  }, []);
+  }, [refreshCounter]);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    setRefreshCounter((c) => c + 1);
+    setTimeout(() => setRefreshing(false), 800);
+  };
 
   const filteredDrives = useMemo(() => {
     switch (filter) {
@@ -237,6 +260,7 @@ export default function DrivesScreen() {
   }, [drives, filter]);
 
   const showFilterSheet = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Alert.alert('Filter Drives', null, [
       { text: 'All Drives', onPress: () => setFilter('all') },
       { text: 'This Week', onPress: () => setFilter('this-week') },
@@ -254,6 +278,14 @@ export default function DrivesScreen() {
       style={styles.container}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+          colors={['#f97316']}
+          tintColor="#f97316"
+        />
+      }
     >
       {/* Header */}
       <View style={styles.header}>
@@ -267,19 +299,16 @@ export default function DrivesScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Loading */}
-      {loading && (
-        <View style={styles.loadingWrap}>
-          <ActivityIndicator color={ORANGE} />
-        </View>
-      )}
+      {/* Loading skeleton */}
+      {loading && <SkeletonList count={3} height={110} />}
 
       {/* Empty state */}
       {!loading && drives.length === 0 && (
         <View style={styles.emptyWrap}>
+          <Text style={styles.emptyIcon}>🚗</Text>
           <Text style={styles.emptyTitle}>no drives yet</Text>
           <Text style={styles.emptySubtitle}>
-            get moving — drives are logged automatically when you hit 5+ mph for 2 minutes
+            start driving and your routes will appear here
           </Text>
         </View>
       )}
@@ -339,9 +368,8 @@ const styles = StyleSheet.create({
   filterText: { color: '#555', fontSize: 12, fontWeight: '600' },
   filterTextActive: { color: ORANGE },
 
-  loadingWrap: { paddingVertical: 40, alignItems: 'center' },
-
   emptyWrap: { paddingVertical: 40, alignItems: 'center', paddingHorizontal: 24 },
+  emptyIcon: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { color: '#555', fontSize: 15, fontWeight: '500', marginBottom: 8 },
   emptySubtitle: { color: '#333', fontSize: 12, textAlign: 'center', lineHeight: 18 },
   clearFilter: { color: ORANGE, fontSize: 13, fontWeight: '600', marginTop: 4 },
