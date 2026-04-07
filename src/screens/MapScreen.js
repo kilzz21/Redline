@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, UrlTile } from 'react-native-maps';
+import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 import {
@@ -17,6 +17,7 @@ import { auth, db, functions } from '../config/firebase';
 import { GOOGLE_PLACES_KEY } from '../config/keys';
 import { useCrews } from '../hooks/useCrews';
 import { useMic } from '../context/MicContext';
+import { getDirections, getETAs } from '../utils/directions';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,25 @@ const TRAIL_MAX_AGE_MS = 5 * 60 * 1000;
 const TRAIL_MAX_POINTS = 30;
 const ARRIVED_THRESHOLD_MILES = 0.124; // ~200 meters
 const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
+
+const darkMapStyle = [
+  { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
+  { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#57606f' }] },
+  { featureType: 'administrative.country', elementType: 'labels.text.fill', stylers: [{ color: '#9e9e9e' }] },
+  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#bdbdbd' }] },
+  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
+  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#2c6675' }] },
+  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f4f5e' }] },
+  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#b0d5ce' }] },
+  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
+];
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -388,6 +408,8 @@ export default function MapScreen({ navigation }) {
   const [showMeetupModal, setShowMeetupModal] = useState(false);
   const [otw, setOtw] = useState(false);
   const [smoothedPositions, setSmoothedPositions] = useState({});
+  const [routeCoords, setRouteCoords] = useState(null); // Google Directions polyline
+  const [memberETAs, setMemberETAs] = useState({}); // uid → { duration, distance }
 
   const crewsRef = useRef([]);
   crewsRef.current = crews;
@@ -406,6 +428,7 @@ export default function MapScreen({ navigation }) {
   const myProfileRef = useRef(null);
   const targetPositionsRef = useRef({});
   const smoothedPositionsRef = useRef({});
+  const etaIntervalRef = useRef(null);
 
   destinationRef.current = destination;
   selectedCrewIdRef.current = selectedCrewId;
@@ -442,6 +465,46 @@ export default function MapScreen({ navigation }) {
       }
     });
   }, [selectedCrewId, crews.length]);
+
+  // ── Directions route + Distance Matrix ETAs ──────────────────────────────
+
+  useEffect(() => {
+    if (etaIntervalRef.current) { clearInterval(etaIntervalRef.current); etaIntervalRef.current = null; }
+
+    if (!destination || !location) {
+      setRouteCoords(null);
+      setMemberETAs({});
+      return;
+    }
+
+    const { latitude: dLat, longitude: dLon } = destination;
+
+    async function fetchAll() {
+      // Directions for own route polyline
+      try {
+        const route = await getDirections(location.latitude, location.longitude, dLat, dLon);
+        setRouteCoords(route?.coordinates ?? null);
+      } catch { /* silent */ }
+
+      // ETAs for all crew members that have a known position
+      try {
+        const origins = crewMembers
+          .filter((m) => m.latitude != null && m.longitude != null)
+          .map((m) => ({ uid: m.id, lat: m.latitude, lon: m.longitude }));
+        if (origins.length) {
+          const etas = await getETAs(origins, dLat, dLon);
+          const map = {};
+          etas.forEach((e) => { map[e.uid] = e; });
+          setMemberETAs(map);
+        }
+      } catch { /* silent */ }
+    }
+
+    fetchAll();
+    etaIntervalRef.current = setInterval(fetchAll, 60_000);
+    return () => { clearInterval(etaIntervalRef.current); etaIntervalRef.current = null; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [destination, location?.latitude, location?.longitude]);
 
   // ── Smooth position interpolation (20fps) ────────────────────────────────
 
@@ -902,26 +965,21 @@ export default function MapScreen({ navigation }) {
       <View style={styles.mapWrap}>
         <MapView
           ref={mapRef}
+          provider={PROVIDER_GOOGLE}
           style={styles.map}
           region={region}
-          mapType="none"
-          customMapStyle={[]}
-          showsUserLocation={false}
+          customMapStyle={darkMapStyle}
+          showsUserLocation={true}
+          followsUserLocation={false}
           showsMyLocationButton={false}
           showsCompass={false}
+          showsTraffic={false}
+          showsBuildings={true}
           rotateEnabled={false}
           minZoomLevel={3}
           maxZoomLevel={18}
           onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          <UrlTile
-            urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-            maximumZ={18}
-            minimumZ={3}
-            shouldReplaceMapContent={true}
-            tileSize={256}
-            opacity={1}
-          />
 
           {/* Self dot */}
           {location && (
@@ -943,6 +1001,17 @@ export default function MapScreen({ navigation }) {
             >
               <DestinationPin name={destination.name} />
             </Marker>
+          )}
+
+          {/* Driving route to destination */}
+          {routeCoords && routeCoords.length > 1 && (
+            <Polyline
+              coordinates={routeCoords}
+              strokeColor={ORANGE}
+              strokeWidth={3}
+              lineDashPattern={[0]}
+              opacity={0.8}
+            />
           )}
 
           {/* Crew trails */}
@@ -1071,7 +1140,7 @@ export default function MapScreen({ navigation }) {
                 <Text style={styles.destCardName} numberOfLines={1}>{destination.name}</Text>
                 <Text style={styles.destCardSub}>
                   set by {destination.setByName}
-                  {myDistToDest != null ? ` · ${myDistToDest.toFixed(1)}mi away` : ''}
+                  {memberETAs[uid]?.distance ? ` · ${memberETAs[uid].distance}` : myDistToDest != null ? ` · ${myDistToDest.toFixed(1)}mi away` : ''}
                 </Text>
               </View>
             </View>
@@ -1123,8 +1192,14 @@ export default function MapScreen({ navigation }) {
 
           let etaText = null;
           if (destination && !m.arrivedAtDestination) {
-            const distToDest = haversineMiles(m.latitude, m.longitude, destination.latitude, destination.longitude);
-            etaText = etaLabel(distToDest, m.speed);
+            const realEta = memberETAs[m.id];
+            if (realEta) {
+              etaText = realEta.duration;
+            } else {
+              // fallback to haversine estimate while API result loads
+              const distToDest = haversineMiles(m.latitude, m.longitude, destination.latitude, destination.longitude);
+              etaText = etaLabel(distToDest, m.speed);
+            }
           }
 
           // Caravan mode: gap between consecutive sorted members
