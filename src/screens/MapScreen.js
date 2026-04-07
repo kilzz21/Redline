@@ -795,12 +795,14 @@ export default function MapScreen({ navigation }) {
           showsMyLocationButton={false}
           showsCompass={false}
           rotateEnabled={false}
+          minZoomLevel={10}
+          maxZoomLevel={18}
           onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          {/* CartoDB Dark Matter — single host, no subdomain substitution */}
+          {/* CartoDB Voyager — dark-ish but roads + labels clearly visible */}
           <UrlTile
-            urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png"
-            maximumZ={19}
+            urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/rastertiles/voyager/{z}/{x}/{y}.png"
+            maximumZ={18}
             flipY={false}
             tileSize={256}
             shouldReplaceMapContent
