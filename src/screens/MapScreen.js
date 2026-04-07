@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { auth, db, functions } from '../config/firebase';
+import { GOOGLE_PLACES_KEY } from '../config/keys';
 import { useCrews } from '../hooks/useCrews';
 import { useMic } from '../context/MicContext';
 
@@ -142,26 +143,41 @@ function DestinationPin({ name }) {
 
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
-async function searchNominatim(query, userLat, userLng) {
-  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=20&addressdetails=1&namedetails=1&dedupe=1`;
-  if (userLat != null && userLng != null) {
-    // Soft viewbox bias (~7mi box) — no bounded param so global results still appear
-    url += `&viewbox=${userLng - 0.1},${userLat - 0.1},${userLng + 0.1},${userLat + 0.1}`;
-  }
-  const res = await fetch(url, { headers: { 'User-Agent': 'Redline/1.0' } });
-  const data = await res.json();
-  return data
-    .map((r) => {
-      const lat = parseFloat(r.lat);
-      const lng = parseFloat(r.lon);
-      const dist = userLat != null ? haversineMiles(userLat, userLng, lat, lng) : null;
-      // Prefer namedetails.name, fall back to first segment of display_name
-      const name = r.namedetails?.name || r.display_name.split(',')[0].trim();
-      // Subtitle: second comma segment (typically neighborhood or city)
-      const parts = r.display_name.split(',');
-      const subtitle = parts.length > 1 ? parts[1].trim() : '';
-      return { name, subtitle, fullAddress: r.display_name, latitude: lat, longitude: lng, distance: dist };
+async function searchPlaces(query, userLat, userLng) {
+  const locationParam = (userLat != null && userLng != null)
+    ? `&location=${userLat},${userLng}&radius=50000`
+    : '';
+  const autocompleteUrl =
+    `https://maps.googleapis.com/maps/api/place/autocomplete/json` +
+    `?input=${encodeURIComponent(query)}${locationParam}&key=${GOOGLE_PLACES_KEY}`;
+
+  const acRes = await fetch(autocompleteUrl);
+  const acData = await acRes.json();
+  if (!acData.predictions?.length) return [];
+
+  const results = await Promise.all(
+    acData.predictions.slice(0, 6).map(async (p) => {
+      const detailUrl =
+        `https://maps.googleapis.com/maps/api/place/details/json` +
+        `?place_id=${p.place_id}&fields=name,geometry,formatted_address&key=${GOOGLE_PLACES_KEY}`;
+      const detailRes = await fetch(detailUrl);
+      const detail = await detailRes.json();
+      const loc = detail.result?.geometry?.location;
+      if (!loc) return null;
+      return {
+        name: p.structured_formatting.main_text,
+        fullAddress: p.structured_formatting.secondary_text ?? detail.result.formatted_address ?? '',
+        latitude: loc.lat,
+        longitude: loc.lng,
+        distance: (userLat != null && userLng != null)
+          ? haversineMiles(userLat, userLng, loc.lat, loc.lng)
+          : null,
+      };
     })
+  );
+
+  return results
+    .filter(Boolean)
     .sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
 }
 
@@ -187,11 +203,11 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
   }, [visible]);
 
   const runSearch = useCallback(async (text) => {
-    if (!text.trim() || text.trim().length < 3) { setResults([]); return; }
+    if (!text.trim() || text.trim().length < 2) { setResults([]); return; }
     setSearching(true);
     setError('');
     try {
-      const hits = await searchNominatim(text, gpsLocation?.latitude, gpsLocation?.longitude);
+      const hits = await searchPlaces(text, gpsLocation?.latitude, gpsLocation?.longitude);
       setResults(hits);
       if (!hits.length) setError('no results found');
     } catch {
@@ -326,10 +342,10 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
                   <Ionicons name="location-outline" size={16} color="#555" style={{ marginRight: 10, marginTop: 1 }} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.resultName} numberOfLines={1}>{r.name}</Text>
-                    {r.subtitle ? <Text style={styles.resultAddr} numberOfLines={1}>{r.subtitle}</Text> : null}
+                    {r.fullAddress ? <Text style={styles.resultAddr} numberOfLines={1}>{r.fullAddress}</Text> : null}
                   </View>
                   {r.distance != null && (
-                    <Text style={styles.resultDist}>
+                    <Text style={[styles.resultDist, { color: ORANGE }]}>
                       {r.distance < 0.1 ? 'nearby' : `${r.distance.toFixed(1)} mi`}
                     </Text>
                   )}
