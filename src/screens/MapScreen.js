@@ -142,96 +142,169 @@ function DestinationPin({ name }) {
 
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
-function SetMeetupModal({ visible, onClose, onSet }) {
+async function searchNominatim(query, userLat, userLng) {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=8&addressdetails=1`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Redline/1.0' } });
+  const data = await res.json();
+  return data.map((r) => {
+    const lat = parseFloat(r.lat);
+    const lng = parseFloat(r.lon);
+    const dist = userLat != null ? haversineMiles(userLat, userLng, lat, lng) : null;
+    const namePart = r.display_name.split(',')[0].trim();
+    return { name: namePart, fullAddress: r.display_name, latitude: lat, longitude: lng, distance: dist };
+  }).sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
+}
+
+function SetMeetupModal({ visible, onClose, onSet, userLocation, mapCenterRef }) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
-  const [result, setResult] = useState(null);
+  const [results, setResults] = useState([]);
+  const [selected, setSelected] = useState(null);
   const [error, setError] = useState('');
+  const debounceRef = useRef(null);
 
-  const search = async () => {
-    if (!query.trim()) return;
+  const runSearch = useCallback(async (text) => {
+    if (!text.trim() || text.trim().length < 2) { setResults([]); return; }
     setSearching(true);
-    setResult(null);
     setError('');
     try {
-      const results = await Location.geocodeAsync(query.trim());
-      if (!results.length) {
-        setError('no location found — try a different search');
-        return;
-      }
-      setResult({ name: query.trim(), latitude: results[0].latitude, longitude: results[0].longitude });
-    } catch (e) {
+      const hits = await searchNominatim(text, userLocation?.latitude, userLocation?.longitude);
+      setResults(hits);
+      if (!hits.length) setError('no results found');
+    } catch {
       setError('search failed — check your connection');
     } finally {
       setSearching(false);
     }
+  }, [userLocation]);
+
+  const onChangeText = (text) => {
+    setQuery(text);
+    setSelected(null);
+    setError('');
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => runSearch(text), 500);
+  };
+
+  const pickResult = (r) => {
+    setSelected(r);
+    setResults([]);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const dropPin = () => {
+    const center = mapCenterRef?.current;
+    if (!center) return;
+    pickResult({
+      name: 'Dropped pin',
+      fullAddress: `${center.latitude.toFixed(5)}, ${center.longitude.toFixed(5)}`,
+      latitude: center.latitude,
+      longitude: center.longitude,
+      distance: 0,
+    });
   };
 
   const confirm = () => {
-    if (!result) return;
-    onSet(result);
-    setQuery('');
-    setResult(null);
-    setError('');
+    if (!selected) return;
+    onSet(selected);
+    setQuery(''); setSelected(null); setResults([]); setError('');
+    onClose();
+  };
+
+  const reset = () => {
+    setQuery(''); setSelected(null); setResults([]); setError('');
     onClose();
   };
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={reset}>
       <KeyboardAvoidingView
         style={[styles.modalRoot, { paddingTop: insets.top }]}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.modalHeader}>
-          <TouchableOpacity onPress={onClose} style={styles.modalHeaderBtn}>
+          <TouchableOpacity onPress={reset} style={styles.modalHeaderBtn}>
             <Text style={styles.modalCancel}>cancel</Text>
           </TouchableOpacity>
           <Text style={styles.modalTitle}>set meetup</Text>
-          <TouchableOpacity onPress={confirm} disabled={!result} style={styles.modalHeaderBtn}>
-            <Text style={[styles.modalSave, !result && { opacity: 0.3 }]}>set</Text>
+          <TouchableOpacity onPress={confirm} disabled={!selected} style={styles.modalHeaderBtn}>
+            <Text style={[styles.modalSave, !selected && { opacity: 0.3 }]}>set</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.modalBody}>
-          <View style={styles.searchRow}>
+          {/* Search bar */}
+          <View style={[styles.searchRow, selected && { borderColor: '#22c55e55' }]}>
             <TextInput
               style={styles.searchInput}
-              placeholder="search for a place..."
+              placeholder="search restaurants, addresses, places..."
               placeholderTextColor="#444"
               value={query}
-              onChangeText={setQuery}
-              onSubmitEditing={search}
+              onChangeText={onChangeText}
               returnKeyType="search"
+              onSubmitEditing={() => runSearch(query)}
               autoFocus
               autoCorrect={false}
+              autoCapitalize="none"
             />
-            <TouchableOpacity style={styles.searchBtn} onPress={search} disabled={searching} activeOpacity={0.7}>
-              {searching
-                ? <ActivityIndicator size="small" color={ORANGE} />
-                : <Ionicons name="search" size={18} color={ORANGE} />
-              }
-            </TouchableOpacity>
+            {searching
+              ? <ActivityIndicator size="small" color={ORANGE} style={{ marginRight: 4 }} />
+              : <Ionicons name="search" size={18} color="#444" />
+            }
           </View>
 
-          {error ? <Text style={styles.searchError}>{error}</Text> : null}
+          {/* Drop pin button */}
+          <TouchableOpacity style={styles.dropPinBtn} onPress={dropPin} activeOpacity={0.7}>
+            <Ionicons name="pin-outline" size={14} color="#888" />
+            <Text style={styles.dropPinText}>drop pin at map center</Text>
+          </TouchableOpacity>
 
-          {result && (
-            <View style={styles.resultCard}>
-              <Ionicons name="location" size={20} color={ORANGE} />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                <Text style={styles.resultName} numberOfLines={2}>{result.name}</Text>
-                <Text style={styles.resultCoords}>
-                  {result.latitude.toFixed(5)}, {result.longitude.toFixed(5)}
-                </Text>
+          {/* Selected result */}
+          {selected && (
+            <View style={styles.selectedCard}>
+              <View style={styles.selectedDot} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.resultName}>{selected.name}</Text>
+                <Text style={styles.resultAddr} numberOfLines={1}>{selected.fullAddress}</Text>
               </View>
-              <Ionicons name="checkmark-circle" size={20} color="#22c55e" />
+              <TouchableOpacity onPress={() => { setSelected(null); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={18} color="#555" />
+              </TouchableOpacity>
             </View>
           )}
 
-          <Text style={styles.searchHint}>
-            tip: search for a landmark, address, or intersection
-          </Text>
+          {/* Error */}
+          {error && !selected ? <Text style={styles.searchError}>{error}</Text> : null}
+
+          {/* Results list */}
+          {!selected && results.length > 0 && (
+            <ScrollView
+              style={styles.resultsList}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {results.map((r, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={styles.resultRow}
+                  onPress={() => pickResult(r)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="location-outline" size={16} color="#555" style={{ marginRight: 10, marginTop: 1 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.resultName} numberOfLines={1}>{r.name}</Text>
+                    <Text style={styles.resultAddr} numberOfLines={1}>{r.fullAddress}</Text>
+                  </View>
+                  {r.distance != null && (
+                    <Text style={styles.resultDist}>
+                      {r.distance < 0.1 ? 'nearby' : `${r.distance.toFixed(1)} mi`}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -262,6 +335,7 @@ export default function MapScreen({ navigation }) {
   const locationRef = useRef(null);
   const watchRef = useRef(null);
   const mapRef = useRef(null);
+  const mapCenterRef = useRef(null);
   const trailsRef = useRef({});
   const driveStateRef = useRef('IDLE');
   const driveDataRef = useRef(null);
@@ -721,10 +795,11 @@ export default function MapScreen({ navigation }) {
           showsMyLocationButton={false}
           showsCompass={false}
           rotateEnabled={false}
+          onRegionChange={(r) => { mapCenterRef.current = { latitude: r.latitude, longitude: r.longitude }; }}
         >
-          {/* CartoDB Dark Matter tiles */}
+          {/* CartoDB Dark Matter — single host, no subdomain substitution */}
           <UrlTile
-            urlTemplate="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+            urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png"
             maximumZ={19}
             flipY={false}
             tileSize={256}
@@ -1029,6 +1104,8 @@ export default function MapScreen({ navigation }) {
         visible={showMeetupModal}
         onClose={() => setShowMeetupModal(false)}
         onSet={handleSetMeetup}
+        userLocation={location}
+        mapCenterRef={mapCenterRef}
       />
     </View>
   );
@@ -1249,5 +1326,27 @@ const styles = StyleSheet.create({
   },
   resultName: { color: '#fff', fontSize: 14, fontWeight: '600', marginBottom: 2 },
   resultCoords: { color: '#555', fontSize: 11 },
-  searchHint: { color: '#333', fontSize: 11, fontStyle: 'italic', textAlign: 'center', marginTop: 8 },
+  dropPinBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 8, marginBottom: 8,
+  },
+  dropPinText: { color: '#888', fontSize: 12 },
+
+  selectedCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#1a1a1a', borderRadius: 10, borderWidth: 1,
+    borderColor: '#22c55e44', padding: 12, marginBottom: 8,
+  },
+  selectedDot: {
+    width: 10, height: 10, borderRadius: 5,
+    backgroundColor: ORANGE, marginRight: 10,
+  },
+
+  resultsList: { maxHeight: 320 },
+  resultRow: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    paddingVertical: 12, borderBottomWidth: 0.5, borderBottomColor: '#1e1e1e',
+  },
+  resultDist: { color: ORANGE, fontSize: 12, fontWeight: '600', marginLeft: 8, marginTop: 2 },
+  resultAddr: { color: '#555', fontSize: 11, marginTop: 2 },
 });
