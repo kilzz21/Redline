@@ -14,7 +14,7 @@ service cloud.firestore {
       }
     }
 
-    // ── Invites ────────────────────────────────────────────────────────────────
+    // ── Invites (connection requests) ──────────────────────────────────────────
     match /invites/{inviteId} {
       allow read: if request.auth != null &&
                      (request.auth.uid == resource.data.fromUid ||
@@ -28,17 +28,42 @@ service cloud.firestore {
                         request.auth.uid == resource.data.toUid);
     }
 
+    // ── Crew Invites ───────────────────────────────────────────────────────────
+    // Invitations to join a crew — require acceptance before membership is granted.
+    match /crewInvites/{inviteId} {
+      allow read: if request.auth != null &&
+                     (request.auth.uid == resource.data.fromUid ||
+                      request.auth.uid == resource.data.toUid);
+      allow create: if request.auth != null &&
+                       request.auth.uid == request.resource.data.fromUid;
+      allow update: if request.auth != null &&
+                       (request.auth.uid == resource.data.toUid ||
+                        request.auth.uid == resource.data.fromUid);
+      allow delete: if request.auth != null &&
+                       (request.auth.uid == resource.data.fromUid ||
+                        request.auth.uid == resource.data.toUid);
+    }
+
     // ── Crews ──────────────────────────────────────────────────────────────────
     // Only members can read or update a crew.
-    // Creator can delete. Channel IDs are Firestore-generated random strings
-    // so they are impossible to guess by non-members.
+    // A non-member can add themselves to members (only that field) to accept an invite.
+    // Creator can delete.
     match /crews/{crewId} {
       allow read: if request.auth != null &&
                      request.auth.uid in resource.data.members;
       allow create: if request.auth != null &&
                        request.auth.uid in request.resource.data.members;
-      allow update: if request.auth != null &&
-                       request.auth.uid in resource.data.members;
+      allow update: if request.auth != null && (
+                       // Current members can update anything
+                       request.auth.uid in resource.data.members
+                       ||
+                       // Non-member accepting invite: can only add themselves to members
+                       (
+                         request.auth.uid in request.resource.data.members &&
+                         !(request.auth.uid in resource.data.members) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+                       )
+                     );
       allow delete: if request.auth != null &&
                        request.auth.uid == resource.data.createdBy;
 

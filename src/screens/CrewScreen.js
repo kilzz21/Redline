@@ -173,7 +173,7 @@ function CrewCard({ crew, uid, onPress, onLongPress, onOpenRadio, index }) {
 
 // ─── Create Crew Modal ────────────────────────────────────────────────────────
 
-function CreateCrewModal({ visible, connections, uid, onClose, onCreated }) {
+function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCreated }) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [selected, setSelected] = useState(new Set());
@@ -191,14 +191,28 @@ function CreateCrewModal({ visible, connections, uid, onClose, onCreated }) {
     if (!name.trim() || !uid) return;
     setLoading(true);
     try {
-      const memberUids = [uid, ...selected];
+      const crewName = name.trim();
       const ref = await addDoc(collection(db, 'crews'), {
-        name: name.trim(),
+        name: crewName,
         createdBy: uid,
-        members: memberUids,
+        members: [uid],
         createdAt: serverTimestamp(),
       });
-      onCreated(ref.id);
+      // Send crew invites to each selected member
+      const fromName = myProfile?.name || auth.currentUser?.email || 'Unknown';
+      await Promise.all([...selected].map((toUid) =>
+        addDoc(collection(db, 'crewInvites'), {
+          crewId: ref.id,
+          crewName,
+          fromUid: uid,
+          fromName,
+          toUid,
+          memberCount: selected.size + 1,
+          status: 'pending',
+          createdAt: serverTimestamp(),
+        })
+      ));
+      onCreated(ref.id, selected.size);
       setName('');
       setSelected(new Set());
       onClose();
@@ -276,7 +290,7 @@ function CreateCrewModal({ visible, connections, uid, onClose, onCreated }) {
 
 // ─── Crew Detail Modal ────────────────────────────────────────────────────────
 
-function CrewDetailModal({ crew, uid, connections, visible, onClose }) {
+function CrewDetailModal({ crew, uid, myProfile, connections, visible, onClose, onInvitesSent }) {
   const insets = useSafeAreaInsets();
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedToAdd, setSelectedToAdd] = useState(new Set());
@@ -299,13 +313,24 @@ function CrewDetailModal({ crew, uid, connections, visible, onClose }) {
     if (!crew || selectedToAdd.size === 0) return;
     setAddLoading(true);
     try {
-      await updateDoc(doc(db, 'crews', crew.id), {
-        members: arrayUnion(...selectedToAdd),
-      });
+      const fromName = myProfile?.name || auth.currentUser?.email || 'Unknown';
+      await Promise.all([...selectedToAdd].map((toUid) =>
+        addDoc(collection(db, 'crewInvites'), {
+          crewId: crew.id,
+          crewName: crew.name,
+          fromUid: uid,
+          fromName,
+          toUid,
+          memberCount: (crew.members?.length || 1) + 1,
+          status: 'pending',
+          createdAt: serverTimestamp(),
+        })
+      ));
+      onInvitesSent?.(selectedToAdd.size);
       setSelectedToAdd(new Set());
       setAddingMembers(false);
     } catch (e) {
-      Alert.alert('Failed to add members', e.message);
+      Alert.alert('Failed to invite members', e.message);
     } finally {
       setAddLoading(false);
     }
@@ -393,7 +418,7 @@ function CrewDetailModal({ crew, uid, connections, visible, onClose }) {
             >
               {addLoading
                 ? <ActivityIndicator size="small" color={ORANGE} />
-                : <Text style={[styles.modalSaveText, selectedToAdd.size === 0 && { opacity: 0.3 }]}>add</Text>
+                : <Text style={[styles.modalSaveText, selectedToAdd.size === 0 && { opacity: 0.3 }]}>invite</Text>
               }
             </TouchableOpacity>
           )}
@@ -432,7 +457,7 @@ function CrewDetailModal({ crew, uid, connections, visible, onClose }) {
                   onPress={() => setAddingMembers(true)}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.addMemberBtnText}>+ add member</Text>
+                  <Text style={styles.addMemberBtnText}>+ invite member</Text>
                 </TouchableOpacity>
               )}
             </>
@@ -470,6 +495,7 @@ export default function CrewScreen({ navigation, route }) {
   const [refreshing, setRefreshing] = useState(false);
   const [myProfile, setMyProfile] = useState(null);
   const [pendingInvites, setPendingInvites] = useState([]);
+  const [pendingCrewInvites, setPendingCrewInvites] = useState([]);
   const [sentUids, setSentUids] = useState(new Set());
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [detailCrew, setDetailCrew] = useState(null);
@@ -478,6 +504,8 @@ export default function CrewScreen({ navigation, route }) {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [deepLinkUser, setDeepLinkUser] = useState(null);
+  const [toastMsg, setToastMsg] = useState('');
+  const toastAnim = useRef(new Animated.Value(0)).current;
   const searchTimer = useRef(null);
 
   // Loading skeleton — hide after first data arrives
@@ -521,6 +549,15 @@ export default function CrewScreen({ navigation, route }) {
     return onSnapshot(
       query(collection(db, 'invites'), where('toUid', '==', uid), where('status', '==', 'pending')),
       (snap) => setPendingInvites(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+  }, [uid]);
+
+  // Pending crew invites received
+  useEffect(() => {
+    if (!uid) return;
+    return onSnapshot(
+      query(collection(db, 'crewInvites'), where('toUid', '==', uid), where('status', '==', 'pending')),
+      (snap) => setPendingCrewInvites(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
     );
   }, [uid]);
 
@@ -589,6 +626,33 @@ export default function CrewScreen({ navigation, route }) {
     try {
       await Share.share({ message: `Join my crew on Redline! redline://invite/${uid}` });
     } catch (_) {}
+  };
+
+  const showToast = useCallback((msg) => {
+    setToastMsg(msg);
+    Animated.sequence([
+      Animated.timing(toastAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.delay(2200),
+      Animated.timing(toastAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
+    ]).start();
+  }, [toastAnim]);
+
+  const acceptCrewInvite = async (invite) => {
+    try {
+      await updateDoc(doc(db, 'crews', invite.crewId), { members: arrayUnion(uid) });
+      await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'accepted' });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      Alert.alert('Failed', e.message);
+    }
+  };
+
+  const declineCrewInvite = async (invite) => {
+    try {
+      await updateDoc(doc(db, 'crewInvites', invite.id), { status: 'declined' });
+    } catch (e) {
+      Alert.alert('Failed', e.message);
+    }
   };
 
   const openCrewDetail = (crew) => {
@@ -720,6 +784,40 @@ export default function CrewScreen({ navigation, route }) {
             </View>
           );
         })()}
+
+        {/* ── Crew Invites ───────────────────────────── */}
+        {pendingCrewInvites.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>crew invites · {pendingCrewInvites.length}</Text>
+            {pendingCrewInvites.map((invite) => (
+              <View key={invite.id} style={[styles.card, { borderColor: ORANGE + '55' }]}>
+                <View style={[styles.crewInviteIcon]}>
+                  <Text style={{ fontSize: 18 }}>👥</Text>
+                </View>
+                <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                  <Text style={styles.memberName} numberOfLines={1}>{invite.crewName}</Text>
+                  <Text style={styles.subText}>invited by {invite.fromName} · {invite.memberCount} member{invite.memberCount !== 1 ? 's' : ''}</Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity
+                    style={styles.addBtn}
+                    onPress={() => acceptCrewInvite(invite)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.addBtnText}>join</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.declineBtn}
+                    onPress={() => declineCrewInvite(invite)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.declineBtnText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))}
+          </>
+        )}
 
         {/* ── Your Crews ─────────────────────────────── */}
         <Text style={styles.sectionLabel}>
@@ -866,17 +964,34 @@ export default function CrewScreen({ navigation, route }) {
         visible={showCreateModal}
         connections={connections}
         uid={uid}
+        myProfile={myProfile}
         onClose={() => setShowCreateModal(false)}
-        onCreated={() => {}}
+        onCreated={(_, inviteCount) => {
+          if (inviteCount > 0) {
+            showToast(`crew created — invite${inviteCount > 1 ? 's' : ''} sent to ${inviteCount} member${inviteCount > 1 ? 's' : ''}`);
+          }
+        }}
       />
 
       <CrewDetailModal
         crew={detailCrew}
         uid={uid}
+        myProfile={myProfile}
         connections={connections}
         visible={showDetail}
         onClose={() => setShowDetail(false)}
+        onInvitesSent={(count) => {
+          showToast(`invite${count > 1 ? 's' : ''} sent to ${count} member${count > 1 ? 's' : ''}`);
+        }}
       />
+
+      {/* ── Toast ──────────────────────────────────────────────────────────── */}
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.toast, { opacity: toastAnim, transform: [{ translateY: toastAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] }]}
+      >
+        <Text style={styles.toastText}>{toastMsg}</Text>
+      </Animated.View>
     </SafeAreaView>
   );
 }
@@ -1036,4 +1151,17 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#2a2a2a', padding: 14, alignItems: 'center',
   },
   addMemberBtnText: { color: ORANGE, fontSize: 14, fontWeight: '600' },
+
+  crewInviteIcon: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: '#2a2a2a',
+    alignItems: 'center', justifyContent: 'center',
+  },
+
+  toast: {
+    position: 'absolute', bottom: 24, left: 24, right: 24,
+    backgroundColor: '#1a1a1a', borderRadius: 12, borderWidth: 0.5,
+    borderColor: '#333', paddingHorizontal: 16, paddingVertical: 12,
+    alignItems: 'center',
+  },
+  toastText: { color: '#fff', fontSize: 13, fontWeight: '500' },
 });
