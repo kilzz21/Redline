@@ -14,6 +14,7 @@
       "backgroundColor": "#111111"
     },
     "ios": {
+      "icon": "./assets/icon.png",
       "supportsTablet": true,
       "config": {
         "googleMapsApiKey": "AIzaSyBe--Xw0VKeo9AE_alz_nFSOsN9cKnwtiY"

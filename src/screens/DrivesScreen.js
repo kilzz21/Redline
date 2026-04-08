@@ -142,7 +142,7 @@ function RouteThumbnail({ coordinates }) {
 
 // ─── Drive Card ───────────────────────────────────────────────────────────────
 
-function DriveCard({ drive }) {
+function DriveCard({ drive, onPress }) {
   const day = relativeDay(drive.startTime);
   const dur = formatDuration(drive.startTime, drive.endTime);
   const name = driveName(drive.startTime);
@@ -160,7 +160,7 @@ function DriveCard({ drive }) {
 
   return (
     <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
-      <View style={styles.card}>
+      <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.8}>
         <RouteThumbnail coordinates={drive.coordinates} />
         <View style={styles.driveNameRow}>
           <Text style={styles.driveName} numberOfLines={1}>{name}</Text>
@@ -193,14 +193,14 @@ function DriveCard({ drive }) {
             <Text style={styles.statLabel} numberOfLines={1}>dist</Text>
           </View>
         </View>
-      </View>
+      </TouchableOpacity>
     </Animated.View>
   );
 }
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
-export default function DrivesScreen() {
+export default function DrivesScreen({ navigation }) {
   const [drives, setDrives] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
@@ -325,7 +325,11 @@ export default function DrivesScreen() {
 
       {/* Drive cards */}
       {filteredDrives.map((drive) => (
-        <DriveCard key={drive.id} drive={drive} />
+        <DriveCard
+          key={drive.id}
+          drive={drive}
+          onPress={() => navigation.navigate('DriveDetail', { drive })}
+        />
       ))}
 
       {/* Count */}

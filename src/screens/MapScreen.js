@@ -274,41 +274,18 @@ const getAutocompleteSuggestions = async (input, lat, lon) => {
   return withDistance;
 };
 
-function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
+function SetMeetupModal({ visible, onClose, onSet, mapCenterRef, userLocation }) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [selected, setSelected] = useState(null);
   const [fetchingDetail, setFetchingDetail] = useState(false);
   const [error, setError] = useState('');
-  const [gpsLocation, setGpsLocation] = useState(null);
-  const [gpsLocating, setGpsLocating] = useState(false);
   const debounceRef = useRef(null);
 
-  // Get a fresh GPS fix when the modal opens
-  useEffect(() => {
-    if (!visible) return;
-    setGpsLocation(null);
-    setGpsLocating(true);
-    const fetchUserLocation = async () => {
-      try {
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.BestForNavigation,
-          maximumAge: 0,
-          timeout: 10000,
-        });
-        setGpsLocation(loc.coords);
-        console.log('[SetMeetup] Fresh GPS:', loc.coords.latitude, loc.coords.longitude);
-      } catch {
-        const last = await Location.getLastKnownPositionAsync().catch(() => null);
-        if (last) setGpsLocation(last.coords);
-        console.log('[SetMeetup] Using last known:', last?.coords.latitude, last?.coords.longitude);
-      } finally {
-        setGpsLocating(false);
-      }
-    };
-    fetchUserLocation();
-  }, [visible]);
+  // Use the live location passed from MapScreen (already tracking via watchPositionAsync)
+  const gpsLocation = userLocation;
+  const gpsLocating = !userLocation;
 
   const onChangeText = (text) => {
     setQuery(text);
@@ -494,11 +471,8 @@ export default function MapScreen({ navigation }) {
   const [routeCoords, setRouteCoords] = useState(null); // Google Directions polyline
   const [memberETAs, setMemberETAs] = useState({}); // uid → { duration, distance }
   const [crewRoutes, setCrewRoutes] = useState({}); // uid → coordinates[]
-  const [isOffCenter, setIsOffCenter] = useState(false);
   const [selectedMember, setSelectedMember] = useState(null);
   const [trackingMember, setTrackingMember] = useState(false);
-  const pillOpacity = useRef(new Animated.Value(0)).current;
-  const pillTimeoutRef = useRef(null);
 
   const crewsRef = useRef([]);
   crewsRef.current = crews;
@@ -1104,64 +1078,16 @@ export default function MapScreen({ navigation }) {
       latitudeDelta: 0.01,
       longitudeDelta: 0.01,
     }, 500);
-    setIsOffCenter(false);
-    Animated.timing(pillOpacity, { toValue: 0, duration: 200, useNativeDriver: true }).start();
-    if (pillTimeoutRef.current) clearTimeout(pillTimeoutRef.current);
   };
 
   const onMapPan = (region) => {
     mapCenterRef.current = { latitude: region.latitude, longitude: region.longitude };
-    if (!location) return;
-    const latDiff = Math.abs(region.latitude - location.latitude);
-    const lngDiff = Math.abs(region.longitude - location.longitude);
-    if (latDiff > 0.002 || lngDiff > 0.002) {
-      if (!isOffCenter) {
-        setIsOffCenter(true);
-        Animated.timing(pillOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
-      }
-      if (pillTimeoutRef.current) clearTimeout(pillTimeoutRef.current);
-      pillTimeoutRef.current = setTimeout(() => {
-        Animated.timing(pillOpacity, { toValue: 0, duration: 400, useNativeDriver: true }).start(() =>
-          setIsOffCenter(false)
-        );
-      }, 5000);
-    }
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.container}>
-
-      {/* ── Crew filter pills — above map, normal flow ── */}
-      {crews.length > 1 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.pillsContainer}
-          contentContainerStyle={styles.pillsContent}
-        >
-          <TouchableOpacity
-            style={[styles.pill, selectedCrewId === null && styles.pillActive]}
-            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(null); }}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.pillText, selectedCrewId === null && styles.pillTextActive]}>all crews</Text>
-          </TouchableOpacity>
-          {crews.map((crew) => (
-            <TouchableOpacity
-              key={crew.id}
-              style={[styles.pill, selectedCrewId === crew.id && styles.pillActive]}
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(crew.id); }}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.pillText, selectedCrewId === crew.id && styles.pillTextActive]} numberOfLines={1}>
-                {crew.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      )}
 
       {/* ── Map ─────────────────────────────────────────── */}
       <View style={styles.mapWrap}>
@@ -1297,14 +1223,6 @@ export default function MapScreen({ navigation }) {
           );
         })()}
 
-        {/* Recenter pill — appears when user pans away */}
-        <Animated.View style={[styles.recenterPill, { opacity: pillOpacity }]} pointerEvents={isOffCenter ? 'auto' : 'none'}>
-          <TouchableOpacity style={styles.recenterPillInner} onPress={recenter} activeOpacity={0.8}>
-            <Ionicons name="locate-outline" size={13} color="#fff" />
-            <Text style={styles.recenterPillText}>tap to recenter</Text>
-          </TouchableOpacity>
-        </Animated.View>
-
         {/* Recenter button — bottom right */}
         {location && (
           <TouchableOpacity style={styles.recenterBtn} onPress={recenter} activeOpacity={0.8}>
@@ -1315,6 +1233,37 @@ export default function MapScreen({ navigation }) {
         {locating && (
           <View style={styles.locatingBanner}>
             <Text style={styles.locatingText}>locating you...</Text>
+          </View>
+        )}
+
+        {/* Crew filter pills — absolute overlay on map */}
+        {crews.length > 1 && (
+          <View style={styles.pillsContainer}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.pillsContent}
+            >
+              <TouchableOpacity
+                style={[styles.pill, selectedCrewId === null && styles.pillActive]}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(null); }}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.pillText, selectedCrewId === null && styles.pillTextActive]}>all crews</Text>
+              </TouchableOpacity>
+              {crews.map((crew) => (
+                <TouchableOpacity
+                  key={crew.id}
+                  style={[styles.pill, selectedCrewId === crew.id && styles.pillActive]}
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(crew.id); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.pillText, selectedCrewId === crew.id && styles.pillTextActive]} numberOfLines={1}>
+                    {crew.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
         )}
 
@@ -1516,6 +1465,7 @@ export default function MapScreen({ navigation }) {
         onClose={() => setShowMeetupModal(false)}
         onSet={handleSetMeetup}
         mapCenterRef={mapCenterRef}
+        userLocation={location}
       />
     </View>
   );
@@ -1529,14 +1479,14 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
 
   recenterBtn: {
-    position: 'absolute', bottom: 180, right: 16, zIndex: 50,
+    position: 'absolute', bottom: 16, right: 16, zIndex: 50,
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: '#1a1a1a', borderWidth: 0.5, borderColor: '#2a2a2a',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
   trackingCard: {
-    position: 'absolute', top: 16, left: 12, right: 12, zIndex: 50,
+    position: 'absolute', top: 52, left: 16, right: 16, zIndex: 80,
     backgroundColor: '#1a1a1a', borderRadius: 12, padding: 12,
     flexDirection: 'row', alignItems: 'center',
     borderWidth: 0.5, borderColor: ORANGE,
@@ -1550,19 +1500,6 @@ const styles = StyleSheet.create({
   trackingName: { color: '#fff', fontWeight: '500', fontSize: 13 },
   trackingSpeed: { color: '#888', fontSize: 11, marginTop: 1 },
   trackingStop: { color: ORANGE, fontSize: 13, fontWeight: '500' },
-
-  recenterPill: {
-    position: 'absolute', top: 14, alignSelf: 'center',
-    left: 0, right: 0, alignItems: 'center',
-    pointerEvents: 'none',
-  },
-  recenterPillInner: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: '#1a1a1acc', borderRadius: 20,
-    borderWidth: 0.5, borderColor: '#3a3a3a',
-    paddingVertical: 7, paddingHorizontal: 14,
-  },
-  recenterPillText: { color: '#fff', fontSize: 12, fontWeight: '500' },
 
   locatingBanner: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
@@ -1618,16 +1555,18 @@ const styles = StyleSheet.create({
   otwBadgeText: { color: '#fff', fontSize: 8, fontWeight: '800' },
 
   // Filter pills — normal flow above map
-  pillsContainer: { backgroundColor: '#111' },
-  pillsContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  pill: {
-    paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
-    backgroundColor: 'rgba(17,17,17,0.85)', borderWidth: 1, borderColor: '#2a2a2a',
-    maxWidth: 140,
+  pillsContainer: {
+    position: 'absolute', top: 8, left: 0, right: 0,
+    zIndex: 90, backgroundColor: 'transparent',
   },
-  pillActive: { backgroundColor: ORANGE, borderColor: ORANGE },
-  pillText: { color: '#aaa', fontSize: 12, fontWeight: '600' },
-  pillTextActive: { color: '#fff' },
+  pillsContent: { paddingHorizontal: 12, gap: 0 },
+  pill: {
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)', marginRight: 6,
+  },
+  pillActive: { backgroundColor: ORANGE },
+  pillText: { color: '#fff', fontSize: 11, fontWeight: '400' },
+  pillTextActive: { fontWeight: '500' },
 
   // Speed pill
   speedPill: {

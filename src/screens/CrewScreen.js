@@ -753,6 +753,7 @@ export default function CrewScreen({ navigation, route }) {
   const [onRedline, setOnRedline] = useState([]);
   const [notOnRedline, setNotOnRedline] = useState([]);
   const [addToCrewTarget, setAddToCrewTarget] = useState(null);
+  const [activeTab, setActiveTab] = useState('crews');
 
   // Loading skeleton — hide after first data arrives
   useEffect(() => {
@@ -1152,8 +1153,56 @@ export default function CrewScreen({ navigation, route }) {
     return [...seen.values()];
   })();
 
+  const crewInviteBadge = deduplicatedCrewInvites.length + expiredCrewInvites.length;
+  const connectionsBadge = pendingInvites.length;
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
+      {/* ── Header ─────────────────────────────────── */}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>crew</Text>
+        {activeTab === 'crews' && (
+          <TouchableOpacity
+            style={styles.createBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowCreateModal(true);
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.createBtnText}>+ create crew</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* ── Tab Bar ────────────────────────────────── */}
+      <View style={styles.tabBar}>
+        {[
+          { key: 'crews', label: 'crews', badge: crewInviteBadge },
+          { key: 'connections', label: 'connections', badge: connectionsBadge },
+          { key: 'discover', label: 'discover', badge: 0 },
+        ].map(({ key, label, badge }) => (
+          <TouchableOpacity
+            key={key}
+            style={[styles.tabItem, activeTab === key && styles.tabItemActive]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setActiveTab(key);
+            }}
+            activeOpacity={0.7}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Text style={[styles.tabText, activeTab === key && styles.tabTextActive]}>{label}</Text>
+              {badge > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{badge}</Text>
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
@@ -1167,360 +1216,347 @@ export default function CrewScreen({ navigation, route }) {
           />
         }
       >
-
-        {/* ── Header ─────────────────────────────────── */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>crew</Text>
-          <TouchableOpacity
-            style={styles.createBtn}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setShowCreateModal(true);
-            }}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.createBtnText}>+ create crew</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ── Invite deep-link banner ────────────────── */}
-        {deepLinkUser && (() => {
-          const state = getConnectionButtonState(deepLinkUser.id);
-          return (
-            <View style={styles.deepLinkBanner}>
-              <Avatar photoURL={deepLinkUser.photoURL} name={deepLinkUser.name} uid={deepLinkUser.id} size={40} />
-              <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                <Text style={styles.memberName}>{deepLinkUser.name || 'Redline user'}</Text>
-                <Text style={styles.subText}>opened via invite link</Text>
-              </View>
-              {state === 'connected' ? (
-                <Text style={styles.connectedText}>connected</Text>
-              ) : state === 'sent' ? (
-                <Text style={styles.sentText}>sent</Text>
-              ) : (
-                <TouchableOpacity
-                  style={styles.addBtn}
-                  onPress={() => sendInvite(deepLinkUser)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.addBtnText}>add</Text>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                onPress={() => setDeepLinkUser(null)}
-                style={{ padding: 8, marginLeft: 4 }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                activeOpacity={0.7}
-              >
-                <Text style={{ color: '#444', fontSize: 16 }}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          );
-        })()}
-
-        {/* ── Crew Invites ───────────────────────────── */}
-        {(deduplicatedCrewInvites.length > 0 || expiredCrewInvites.length > 0) && (
+        {/* ══════════════ CREWS TAB ══════════════════ */}
+        {activeTab === 'crews' && (
           <>
-            <Text style={styles.sectionLabel}>
-              crew invites{deduplicatedCrewInvites.length > 0 ? ` · ${deduplicatedCrewInvites.length}` : ''}
-            </Text>
-
-            {/* Active invites */}
-            {deduplicatedCrewInvites.map((invite) => (
-              <View key={invite.id} style={[styles.card, { borderColor: ORANGE + '55' }]}>
-                <View style={styles.crewInviteIcon}>
-                  <Text style={{ fontSize: 18 }}>👥</Text>
-                </View>
-                <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                  <Text style={styles.memberName} numberOfLines={1}>{invite.crewName}</Text>
-                  <Text style={styles.subText}>invited by {invite.fromName} · {invite.memberCount} member{invite.memberCount !== 1 ? 's' : ''}</Text>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TouchableOpacity
-                    style={styles.addBtn}
-                    onPress={() => acceptCrewInvite(invite)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.addBtnText}>join</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.declineBtn}
-                    onPress={() => declineCrewInvite(invite)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.declineBtnText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
-
-            {/* Expired invites (crew was deleted) */}
-            {expiredCrewInvites.map((invite) => (
-              <View key={invite.id} style={[styles.card, { borderColor: '#333', opacity: 0.7 }]}>
-                <View style={styles.crewInviteIcon}>
-                  <Text style={{ fontSize: 18 }}>🚫</Text>
-                </View>
-                <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                  <Text style={[styles.memberName, { color: '#666' }]} numberOfLines={1}>{invite.crewName}</Text>
-                  <Text style={styles.subText}>crew no longer available</Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.declineBtn}
-                  onPress={() => dismissExpiredInvite(invite)}
-                  activeOpacity={0.8}
-                >
-                  <Text style={styles.declineBtnText}>dismiss</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </>
-        )}
-
-        {/* ── Your Crews ─────────────────────────────── */}
-        <Text style={styles.sectionLabel}>
-          your crews{crews.length > 0 ? ` · ${crews.length}` : ''}
-        </Text>
-
-        {loading ? (
-          <SkeletonList count={3} height={72} />
-        ) : crews.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>no crews yet</Text>
-            <Text style={styles.emptySub}>
-              create a crew to get started
-            </Text>
-            <TouchableOpacity
-              style={styles.emptyAction}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setShowCreateModal(true);
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.emptyActionText}>create your first crew</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          crews.map((crew, i) => (
-            <CrewCard
-              key={crew.id}
-              crew={crew}
-              uid={uid}
-              index={i}
-              onPress={() => openCrewDetail(crew)}
-              onLongPress={() => handleCrewLongPress(crew)}
-              onOpenRadio={() => openRadio(crew)}
-            />
-          ))
-        )}
-
-        {/* ── Connections ────────────────────────────── */}
-        <Text style={styles.sectionLabel}>
-          connections{connections.length > 0 ? ` · ${connections.length}` : ''}
-        </Text>
-
-        {/* Search */}
-        <View style={styles.searchWrap}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="find by username..."
-            placeholderTextColor="#444"
-            value={searchText}
-            onChangeText={handleSearchChange}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {searchLoading && <ActivityIndicator size="small" color={ORANGE} style={{ marginLeft: 8 }} />}
-        </View>
-
-        {searchResults.length > 0 && searchResults.map((user) => {
-          const state = getConnectionButtonState(user.id);
-          return (
-            <View key={user.id} style={styles.card}>
-              <Avatar photoURL={user.photoURL} name={user.name} uid={user.id} size={40} />
-              <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                <Text style={styles.memberName} numberOfLines={1}>{user.name}</Text>
-                {user.username ? <Text style={styles.subText} numberOfLines={1}>@{user.username}</Text> : null}
-              </View>
-              {state === 'connected' ? (
-                <Text style={styles.connectedText}>connected</Text>
-              ) : state === 'sent' ? (
-                <Text style={styles.sentText}>sent</Text>
-              ) : (
-                <TouchableOpacity style={styles.addBtn} onPress={() => sendInvite(user)} activeOpacity={0.8}>
-                  <Text style={styles.addBtnText}>add</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          );
-        })}
-
-        {loading ? (
-          <SkeletonList count={2} height={60} />
-        ) : connections.length === 0 && !searchText ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptySub}>
-              search for people by username to add individual connections
-            </Text>
-            <TouchableOpacity style={styles.emptyAction} onPress={shareInviteLink} activeOpacity={0.8}>
-              <Text style={styles.emptyActionText}>share invite link</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          connections.map((c) => (
-            <TouchableOpacity
-              key={c.id}
-              style={styles.card}
-              onPress={() => navigation.navigate('FriendProfile', { uid: c.id })}
-              activeOpacity={0.7}
-            >
-              <Avatar photoURL={c.photoURL} name={c.name} uid={c.id} size={40} />
-              <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={styles.memberName} numberOfLines={1}>{c.name}</Text>
-                  {isOnline(c) && <View style={styles.onlineDotGreen} />}
-                </View>
-                {c.username ? <Text style={styles.subText} numberOfLines={1}>@{c.username}</Text> : null}
-                {formatCarString(c.car) ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(c.car)}</Text> : null}
-              </View>
-            </TouchableOpacity>
-          ))
-        )}
-
-        {/* ── Pending invites ────────────────────────── */}
-        {pendingInvites.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>pending invites</Text>
-            {pendingInvites.map((invite) => (
-              <View key={invite.id} style={styles.card}>
-                <Avatar name={invite.fromName} uid={invite.fromUid} size={40} />
-                <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                  <Text style={styles.memberName} numberOfLines={1}>{invite.fromName}</Text>
-                  <Text style={styles.subText}>wants to connect</Text>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TouchableOpacity
-                    style={styles.addBtn}
-                    onPress={() => respondToInvite(invite.id, 'accepted')}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.addBtnText}>accept</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.declineBtn}
-                    onPress={() => respondToInvite(invite.id, 'declined')}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.declineBtnText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
-          </>
-        )}
-
-        {/* ── Already on Redline ─────────────────────── */}
-        {contactsPermission === 'denied' ? (
-          <>
-            <Text style={styles.sectionLabel}>contacts</Text>
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyTitle}>contacts access needed</Text>
-              <Text style={styles.emptySub}>
-                allow contacts so you can see which friends are already on Redline
-              </Text>
-              <TouchableOpacity
-                style={styles.emptyAction}
-                onPress={() => Linking.openSettings()}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.emptyActionText}>open settings</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        ) : contactsPermission === 'granted' ? (
-          <>
-            {contactsLoading ? (
+            {/* Crew Invites */}
+            {(deduplicatedCrewInvites.length > 0 || expiredCrewInvites.length > 0) && (
               <>
-                <Text style={styles.sectionLabel}>already on redline</Text>
-                <SkeletonList count={3} height={64} />
-              </>
-            ) : onRedline.length > 0 ? (
-              <>
-                <Text style={styles.sectionLabel}>already on redline · {onRedline.length}</Text>
-                {onRedline.map((user) => {
-                  const inCrewTogether = crews.some((c) => c.members?.includes(user.id));
-                  const alreadyInvited = sentCrewInviteUids.has(user.id);
-                  return (
-                    <View key={user.id} style={styles.card}>
-                      <Avatar
-                        photoURL={user.photoURL}
-                        name={user.name}
-                        uid={user.id}
-                        size={40}
-                      />
-                      <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                        <Text style={styles.memberName} numberOfLines={1}>{user.name || 'Unknown'}</Text>
-                        {formatCarString(user.car)
-                          ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(user.car)}</Text>
-                          : null}
-                        {user.location
-                          ? <Text style={styles.subText} numberOfLines={1}>{user.location}</Text>
-                          : null}
-                      </View>
-                      {inCrewTogether ? (
-                        <Text style={styles.sentText}>in crew</Text>
-                      ) : alreadyInvited ? (
-                        <Text style={styles.sentText}>invited</Text>
-                      ) : crews.length > 0 ? (
-                        <TouchableOpacity
-                          style={styles.addBtn}
-                          onPress={() => {
-                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            setAddToCrewTarget(user);
-                          }}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={styles.addBtnText}>add to crew</Text>
-                        </TouchableOpacity>
-                      ) : null}
-                    </View>
-                  );
-                })}
-              </>
-            ) : null}
+                <Text style={styles.sectionLabel}>
+                  crew invites{deduplicatedCrewInvites.length > 0 ? ` · ${deduplicatedCrewInvites.length}` : ''}
+                </Text>
 
-            {/* ── Invite Friends via SMS ──────────────── */}
-            {notOnRedline.length > 0 && (
-              <>
-                <Text style={styles.sectionLabel}>invite friends · {notOnRedline.length}</Text>
-                {notOnRedline.map((c, i) => (
-                  <View key={`${c.name}-${i}`} style={styles.card}>
-                    <View style={styles.contactInitialCircle}>
-                      <Text style={styles.contactInitialText}>{getInitials(c.name)}</Text>
+                {deduplicatedCrewInvites.map((invite) => (
+                  <View key={invite.id} style={[styles.card, { borderColor: ORANGE + '55' }]}>
+                    <View style={styles.crewInviteIcon}>
+                      <Text style={{ fontSize: 18 }}>👥</Text>
                     </View>
                     <View style={[styles.cardBody, { marginLeft: 12 }]}>
-                      <Text style={styles.memberName} numberOfLines={1}>{c.name}</Text>
-                      <Text style={styles.subText}>{c.phone}</Text>
+                      <Text style={styles.memberName} numberOfLines={1}>{invite.crewName}</Text>
+                      <Text style={styles.subText}>invited by {invite.fromName} · {invite.memberCount} member{invite.memberCount !== 1 ? 's' : ''}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        style={styles.addBtn}
+                        onPress={() => acceptCrewInvite(invite)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.addBtnText}>join</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.declineBtn}
+                        onPress={() => declineCrewInvite(invite)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.declineBtnText}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+
+                {expiredCrewInvites.map((invite) => (
+                  <View key={invite.id} style={[styles.card, { borderColor: '#333', opacity: 0.7 }]}>
+                    <View style={styles.crewInviteIcon}>
+                      <Text style={{ fontSize: 18 }}>🚫</Text>
+                    </View>
+                    <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                      <Text style={[styles.memberName, { color: '#666' }]} numberOfLines={1}>{invite.crewName}</Text>
+                      <Text style={styles.subText}>crew no longer available</Text>
                     </View>
                     <TouchableOpacity
-                      style={styles.smsBtn}
-                      onPress={() => {
-                        const digits = normalizePhone(c.phone);
-                        const msg = encodeURIComponent(
-                          "Hey I'm using Redline — a car app for our crew. Download it and join me!"
-                        );
-                        Linking.openURL(`sms:${digits}${Platform.OS === 'ios' ? '&' : '?'}body=${msg}`);
-                      }}
+                      style={styles.declineBtn}
+                      onPress={() => dismissExpiredInvite(invite)}
                       activeOpacity={0.8}
                     >
-                      <Text style={styles.smsBtnText}>invite</Text>
+                      <Text style={styles.declineBtnText}>dismiss</Text>
                     </TouchableOpacity>
                   </View>
                 ))}
               </>
             )}
+
+            {/* Your Crews */}
+            <Text style={styles.sectionLabel}>
+              your crews{crews.length > 0 ? ` · ${crews.length}` : ''}
+            </Text>
+
+            {loading ? (
+              <SkeletonList count={3} height={72} />
+            ) : crews.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyTitle}>no crews yet</Text>
+                <Text style={styles.emptySub}>create a crew to get started</Text>
+                <TouchableOpacity
+                  style={styles.emptyAction}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setShowCreateModal(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.emptyActionText}>create your first crew</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              crews.map((crew, i) => (
+                <CrewCard
+                  key={crew.id}
+                  crew={crew}
+                  uid={uid}
+                  index={i}
+                  onPress={() => openCrewDetail(crew)}
+                  onLongPress={() => handleCrewLongPress(crew)}
+                  onOpenRadio={() => openRadio(crew)}
+                />
+              ))
+            )}
           </>
-        ) : null}
+        )}
+
+        {/* ══════════════ CONNECTIONS TAB ════════════ */}
+        {activeTab === 'connections' && (
+          <>
+            {/* Pending connection requests */}
+            {pendingInvites.length > 0 && (
+              <>
+                <Text style={styles.sectionLabel}>requests · {pendingInvites.length}</Text>
+                {pendingInvites.map((invite) => (
+                  <View key={invite.id} style={styles.card}>
+                    <Avatar name={invite.fromName} uid={invite.fromUid} size={40} />
+                    <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                      <Text style={styles.memberName} numberOfLines={1}>{invite.fromName}</Text>
+                      <Text style={styles.subText}>wants to connect</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        style={styles.addBtn}
+                        onPress={() => respondToInvite(invite.id, 'accepted')}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.addBtnText}>accept</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.declineBtn}
+                        onPress={() => respondToInvite(invite.id, 'declined')}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.declineBtnText}>✕</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+              </>
+            )}
+
+            {/* Connections list */}
+            <Text style={styles.sectionLabel}>
+              connections{connections.length > 0 ? ` · ${connections.length}` : ''}
+            </Text>
+
+            {loading ? (
+              <SkeletonList count={3} height={60} />
+            ) : connections.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptySub}>
+                  use the discover tab to find people to connect with
+                </Text>
+                <TouchableOpacity style={styles.emptyAction} onPress={shareInviteLink} activeOpacity={0.8}>
+                  <Text style={styles.emptyActionText}>share invite link</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              connections.map((c) => (
+                <TouchableOpacity
+                  key={c.id}
+                  style={styles.card}
+                  onPress={() => navigation.navigate('FriendProfile', { uid: c.id })}
+                  activeOpacity={0.7}
+                >
+                  <Avatar photoURL={c.photoURL} name={c.name} uid={c.id} size={40} />
+                  <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.memberName} numberOfLines={1}>{c.name}</Text>
+                      {isOnline(c) && <View style={styles.onlineDotGreen} />}
+                    </View>
+                    {c.username ? <Text style={styles.subText} numberOfLines={1}>@{c.username}</Text> : null}
+                    {formatCarString(c.car) ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(c.car)}</Text> : null}
+                  </View>
+                </TouchableOpacity>
+              ))
+            )}
+          </>
+        )}
+
+        {/* ══════════════ DISCOVER TAB ═══════════════ */}
+        {activeTab === 'discover' && (
+          <>
+            {/* Deep link invite banner */}
+            {deepLinkUser && (() => {
+              const state = getConnectionButtonState(deepLinkUser.id);
+              return (
+                <View style={styles.deepLinkBanner}>
+                  <Avatar photoURL={deepLinkUser.photoURL} name={deepLinkUser.name} uid={deepLinkUser.id} size={40} />
+                  <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                    <Text style={styles.memberName}>{deepLinkUser.name || 'Redline user'}</Text>
+                    <Text style={styles.subText}>opened via invite link</Text>
+                  </View>
+                  {state === 'connected' ? (
+                    <Text style={styles.connectedText}>connected</Text>
+                  ) : state === 'sent' ? (
+                    <Text style={styles.sentText}>sent</Text>
+                  ) : (
+                    <TouchableOpacity style={styles.addBtn} onPress={() => sendInvite(deepLinkUser)} activeOpacity={0.8}>
+                      <Text style={styles.addBtnText}>add</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    onPress={() => setDeepLinkUser(null)}
+                    style={{ padding: 8, marginLeft: 4 }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{ color: '#444', fontSize: 16 }}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })()}
+
+            {/* Search by username */}
+            <Text style={styles.sectionLabel}>search</Text>
+            <View style={styles.searchWrap}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="find by username..."
+                placeholderTextColor="#444"
+                value={searchText}
+                onChangeText={handleSearchChange}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {searchLoading && <ActivityIndicator size="small" color={ORANGE} style={{ marginLeft: 8 }} />}
+            </View>
+
+            {searchResults.length > 0 && searchResults.map((user) => {
+              const state = getConnectionButtonState(user.id);
+              return (
+                <View key={user.id} style={styles.card}>
+                  <Avatar photoURL={user.photoURL} name={user.name} uid={user.id} size={40} />
+                  <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                    <Text style={styles.memberName} numberOfLines={1}>{user.name}</Text>
+                    {user.username ? <Text style={styles.subText} numberOfLines={1}>@{user.username}</Text> : null}
+                  </View>
+                  {state === 'connected' ? (
+                    <Text style={styles.connectedText}>connected</Text>
+                  ) : state === 'sent' ? (
+                    <Text style={styles.sentText}>sent</Text>
+                  ) : (
+                    <TouchableOpacity style={styles.addBtn} onPress={() => sendInvite(user)} activeOpacity={0.8}>
+                      <Text style={styles.addBtnText}>add</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })}
+
+            {/* Contacts on Redline */}
+            {contactsPermission === 'denied' ? (
+              <>
+                <Text style={styles.sectionLabel}>contacts on redline</Text>
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyTitle}>contacts access needed</Text>
+                  <Text style={styles.emptySub}>
+                    allow contacts so you can see which friends are already on Redline
+                  </Text>
+                  <TouchableOpacity style={styles.emptyAction} onPress={() => Linking.openSettings()} activeOpacity={0.8}>
+                    <Text style={styles.emptyActionText}>open settings</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : contactsPermission === 'granted' ? (
+              <>
+                {contactsLoading ? (
+                  <>
+                    <Text style={styles.sectionLabel}>contacts on redline</Text>
+                    <SkeletonList count={3} height={64} />
+                  </>
+                ) : onRedline.length > 0 ? (
+                  <>
+                    <Text style={styles.sectionLabel}>contacts on redline · {onRedline.length}</Text>
+                    {onRedline.map((user) => {
+                      const inCrewTogether = crews.some((c) => c.members?.includes(user.id));
+                      const alreadyInvited = sentCrewInviteUids.has(user.id);
+                      return (
+                        <View key={user.id} style={styles.card}>
+                          <Avatar photoURL={user.photoURL} name={user.name} uid={user.id} size={40} />
+                          <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                            <Text style={styles.memberName} numberOfLines={1}>{user.name || 'Unknown'}</Text>
+                            {formatCarString(user.car)
+                              ? <Text style={styles.subText} numberOfLines={1}>{formatCarString(user.car)}</Text>
+                              : null}
+                            {user.location
+                              ? <Text style={styles.subText} numberOfLines={1}>{user.location}</Text>
+                              : null}
+                          </View>
+                          {inCrewTogether ? (
+                            <Text style={styles.sentText}>in crew</Text>
+                          ) : alreadyInvited ? (
+                            <Text style={styles.sentText}>invited</Text>
+                          ) : crews.length > 0 ? (
+                            <TouchableOpacity
+                              style={styles.addBtn}
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                setAddToCrewTarget(user);
+                              }}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={styles.addBtnText}>add to crew</Text>
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                  </>
+                ) : !contactsLoading && (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptySub}>none of your contacts are on Redline yet</Text>
+                  </View>
+                )}
+
+                {/* Invite Friends via SMS */}
+                {notOnRedline.length > 0 && (
+                  <>
+                    <Text style={styles.sectionLabel}>invite friends · {notOnRedline.length}</Text>
+                    {notOnRedline.map((c, i) => (
+                      <View key={`${c.name}-${i}`} style={styles.card}>
+                        <View style={styles.contactInitialCircle}>
+                          <Text style={styles.contactInitialText}>{getInitials(c.name)}</Text>
+                        </View>
+                        <View style={[styles.cardBody, { marginLeft: 12 }]}>
+                          <Text style={styles.memberName} numberOfLines={1}>{c.name}</Text>
+                          <Text style={styles.subText}>{c.phone}</Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.smsBtn}
+                          onPress={() => {
+                            const digits = normalizePhone(c.phone);
+                            const msg = encodeURIComponent(
+                              "Hey I'm using Redline — a car app for our crew. Download it and join me!"
+                            );
+                            Linking.openURL(`sms:${digits}${Platform.OS === 'ios' ? '&' : '?'}body=${msg}`);
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.smsBtnText}>invite</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </>
+                )}
+              </>
+            ) : null}
+          </>
+        )}
 
       </ScrollView>
 
@@ -1583,13 +1619,32 @@ export default function CrewScreen({ navigation, route }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#111' },
-  scrollContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 32 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 32 },
 
   header: {
     flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', marginBottom: 14,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10,
   },
   headerTitle: { color: '#fff', fontSize: 22, fontWeight: '700' },
+
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 0.5, borderBottomColor: '#2a2a2a',
+    paddingHorizontal: 16,
+  },
+  tabItem: {
+    paddingVertical: 10, paddingHorizontal: 2,
+    marginRight: 20, borderBottomWidth: 2, borderBottomColor: 'transparent',
+  },
+  tabItemActive: { borderBottomColor: ORANGE },
+  tabText: { color: '#555', fontSize: 13, fontWeight: '600' },
+  tabTextActive: { color: '#fff' },
+  tabBadge: {
+    backgroundColor: ORANGE, borderRadius: 8,
+    paddingHorizontal: 5, paddingVertical: 1, minWidth: 16, alignItems: 'center',
+  },
+  tabBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
   createBtn: {
     backgroundColor: ORANGE, borderRadius: 8,
     paddingHorizontal: 12, paddingVertical: 7,
