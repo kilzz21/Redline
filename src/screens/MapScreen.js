@@ -125,6 +125,45 @@ function PulsingDot() {
   );
 }
 
+// ─── Crew map marker ─────────────────────────────────────────────────────────
+
+function CrewMarker({ member, speed, isSelected = false }) {
+  const borderColor = isSelected ? ORANGE : '#fff';
+  return (
+    <View style={{ alignItems: 'center' }}>
+      {/* Speed pill */}
+      <View style={{
+        backgroundColor: '#1a1a1a', borderRadius: 10,
+        paddingHorizontal: 6, paddingVertical: 2, marginBottom: 4,
+        borderWidth: 0.5, borderColor: isSelected ? ORANGE : '#2a2a2a',
+      }}>
+        <Text style={{ color: isSelected ? ORANGE : '#fff', fontSize: 10, fontWeight: '500' }}>
+          {Math.round(speed || 0)} mph
+        </Text>
+      </View>
+      {/* Avatar circle — initials only (remote images unreliable in PROVIDER_GOOGLE markers) */}
+      <View style={{
+        width: 44, height: 44, borderRadius: 22,
+        backgroundColor: member.avatarColor || member.color || ORANGE,
+        borderWidth: 2.5, borderColor,
+        alignItems: 'center', justifyContent: 'center',
+      }}>
+        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '500' }}>
+          {(member.name || '?').charAt(0).toUpperCase()}
+        </Text>
+      </View>
+      {/* Down-arrow pin */}
+      <View style={{
+        width: 0, height: 0,
+        borderLeftWidth: 7, borderRightWidth: 7, borderTopWidth: 10,
+        borderLeftColor: 'transparent', borderRightColor: 'transparent',
+        borderTopColor: borderColor,
+        marginTop: -1,
+      }} />
+    </View>
+  );
+}
+
 // ─── Destination pin (pulsing orange) ────────────────────────────────────────
 
 function DestinationPin({ name }) {
@@ -170,54 +209,77 @@ function DestinationPin({ name }) {
 
 // ─── Set Meetup Modal ─────────────────────────────────────────────────────────
 
-async function searchPlaces(query, userLat, userLng) {
-  const headers = { 'X-Ios-Bundle-Identifier': 'com.kilzz21.redline' };
+const GOOGLE_KEY = GOOGLE_PLACES_KEY;
 
-  const locationParam = (userLat != null && userLng != null)
-    ? `&location=${userLat},${userLng}&radius=50000`
-    : '';
-  const autocompleteUrl =
-    `https://maps.googleapis.com/maps/api/place/autocomplete/json` +
-    `?input=${encodeURIComponent(query)}${locationParam}&key=${GOOGLE_PLACES_KEY}`;
+const getPlaceDetails = async (placeId) => {
+  const url = `https://places.googleapis.com/v1/places/${placeId}`;
+  const res = await fetch(url, {
+    headers: {
+      'X-Goog-Api-Key': GOOGLE_KEY,
+      'X-Goog-FieldMask': 'displayName,formattedAddress,location',
+      'X-Ios-Bundle-Identifier': 'com.kilzz21.redline',
+    },
+  });
+  const data = await res.json();
+  if (!data.location) return null;
+  return {
+    name: data.displayName?.text || '',
+    fullAddress: data.formattedAddress || '',
+    latitude: data.location.latitude,
+    longitude: data.location.longitude,
+  };
+};
 
-  const acRes = await fetch(autocompleteUrl, { headers });
-  const acData = await acRes.json();
-  console.log('[Places autocomplete] status:', acData.status, acData.error_message ?? '');
-  if (!acData.predictions?.length) return [];
+const getAutocompleteSuggestions = async (input, lat, lon) => {
+  const body = {
+    input,
+    languageCode: 'en',
+    ...(lat != null && lon != null ? {
+      locationBias: {
+        circle: { center: { latitude: lat, longitude: lon }, radius: 50000.0 },
+      },
+    } : {}),
+  };
+  const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_KEY,
+      'X-Ios-Bundle-Identifier': 'com.kilzz21.redline',
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  console.log('[New Places API] response:', JSON.stringify(data).slice(0, 400));
+  if (!data.suggestions) return [];
 
-  const results = await Promise.all(
-    acData.predictions.slice(0, 6).map(async (p) => {
-      const detailUrl =
-        `https://maps.googleapis.com/maps/api/place/details/json` +
-        `?place_id=${p.place_id}&fields=name,geometry,formatted_address&key=${GOOGLE_PLACES_KEY}`;
-      const detailRes = await fetch(detailUrl, { headers });
-      const detail = await detailRes.json();
-      console.log('[Places details] status:', detail.status, detail.error_message ?? '');
-      const loc = detail.result?.geometry?.location;
-      if (!loc) return null;
-      return {
-        name: p.structured_formatting.main_text,
-        fullAddress: p.structured_formatting.secondary_text ?? detail.result.formatted_address ?? '',
-        latitude: loc.lat,
-        longitude: loc.lng,
-        distance: (userLat != null && userLng != null)
-          ? haversineMiles(userLat, userLng, loc.lat, loc.lng)
-          : null,
-      };
-    })
-  );
+  const placeIds = data.suggestions
+    .filter((s) => s.placePrediction)
+    .map((s) => s.placePrediction.placeId);
 
-  return results
-    .filter(Boolean)
-    .sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
-}
+  // Fetch details for all predictions in parallel
+  const details = await Promise.all(placeIds.map((id) => getPlaceDetails(id).catch(() => null)));
+  const withDistance = details
+    .filter((d) => d !== null)
+    .map((d) => ({
+      ...d,
+      distanceMi: (lat != null && lon != null)
+        ? haversineMiles(lat, lon, d.latitude, d.longitude)
+        : null,
+    }));
+
+  if (lat != null && lon != null) {
+    withDistance.sort((a, b) => (a.distanceMi ?? Infinity) - (b.distanceMi ?? Infinity));
+  }
+  return withDistance;
+};
 
 function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
-  const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [fetchingDetail, setFetchingDetail] = useState(false);
   const [error, setError] = useState('');
   const [gpsLocation, setGpsLocation] = useState(null);
   const [gpsLocating, setGpsLocating] = useState(false);
@@ -226,63 +288,78 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
   // Get a fresh GPS fix when the modal opens
   useEffect(() => {
     if (!visible) return;
+    setGpsLocation(null);
     setGpsLocating(true);
-    Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
-      .then((loc) => setGpsLocation(loc.coords))
-      .catch(() => {}) // silently fall back to no location bias
-      .finally(() => setGpsLocating(false));
+    const fetchUserLocation = async () => {
+      try {
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.BestForNavigation,
+          maximumAge: 0,
+          timeout: 10000,
+        });
+        setGpsLocation(loc.coords);
+        console.log('[SetMeetup] Fresh GPS:', loc.coords.latitude, loc.coords.longitude);
+      } catch {
+        const last = await Location.getLastKnownPositionAsync().catch(() => null);
+        if (last) setGpsLocation(last.coords);
+        console.log('[SetMeetup] Using last known:', last?.coords.latitude, last?.coords.longitude);
+      } finally {
+        setGpsLocating(false);
+      }
+    };
+    fetchUserLocation();
   }, [visible]);
-
-  const runSearch = useCallback(async (text) => {
-    if (!text.trim() || text.trim().length < 2) { setResults([]); return; }
-    setSearching(true);
-    setError('');
-    try {
-      const hits = await searchPlaces(text, gpsLocation?.latitude, gpsLocation?.longitude);
-      setResults(hits);
-      if (!hits.length) setError('no results found');
-    } catch {
-      setError('search failed — check your connection');
-    } finally {
-      setSearching(false);
-    }
-  }, [gpsLocation]);
 
   const onChangeText = (text) => {
     setQuery(text);
     setSelected(null);
     setError('');
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => runSearch(text), 300);
+    if (!text.trim() || text.trim().length < 2) { setSuggestions([]); return; }
+    if (gpsLocating) return; // wait for GPS fix before searching
+    debounceRef.current = setTimeout(async () => {
+      console.log('[Search] gpsLocation before search:', gpsLocation);
+      setFetchingDetail(true);
+      try {
+        const hits = await getAutocompleteSuggestions(text, gpsLocation?.latitude, gpsLocation?.longitude);
+        setSuggestions(hits);
+        if (!hits.length) setError('no results found');
+      } catch {
+        setError('search failed — check your connection');
+      } finally {
+        setFetchingDetail(false);
+      }
+    }, 200);
   };
 
-  const pickResult = (r) => {
-    setSelected(r);
-    setResults([]);
+  const pickSuggestion = (s) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSuggestions([]);
+    setSelected(s);
   };
 
   const dropPin = () => {
     const center = mapCenterRef?.current;
     if (!center) return;
-    pickResult({
+    setSelected({
       name: 'Dropped pin',
       fullAddress: `${center.latitude.toFixed(5)}, ${center.longitude.toFixed(5)}`,
       latitude: center.latitude,
       longitude: center.longitude,
-      distance: 0,
     });
+    setSuggestions([]);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
   const confirm = () => {
     if (!selected) return;
     onSet(selected);
-    setQuery(''); setSelected(null); setResults([]); setError('');
+    setQuery(''); setSelected(null); setSuggestions([]); setError('');
     onClose();
   };
 
   const reset = () => {
-    setQuery(''); setSelected(null); setResults([]); setError('');
+    setQuery(''); setSelected(null); setSuggestions([]); setError('');
     onClose();
   };
 
@@ -297,8 +374,8 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
             <Text style={styles.modalCancel}>cancel</Text>
           </TouchableOpacity>
           <Text style={styles.modalTitle}>set meetup</Text>
-          <TouchableOpacity onPress={confirm} disabled={!selected} style={styles.modalHeaderBtn}>
-            <Text style={[styles.modalSave, !selected && { opacity: 0.3 }]}>set</Text>
+          <TouchableOpacity onPress={confirm} disabled={!selected || fetchingDetail} style={styles.modalHeaderBtn}>
+            <Text style={[styles.modalSave, (!selected || fetchingDetail) && { opacity: 0.3 }]}>set</Text>
           </TouchableOpacity>
         </View>
 
@@ -312,12 +389,11 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
               value={query}
               onChangeText={onChangeText}
               returnKeyType="search"
-              onSubmitEditing={() => runSearch(query)}
               autoFocus
               autoCorrect={false}
               autoCapitalize="none"
             />
-            {searching
+            {fetchingDetail
               ? <ActivityIndicator size="small" color={ORANGE} style={{ marginRight: 4 }} />
               : <Ionicons name="search" size={18} color="#444" />
             }
@@ -325,13 +401,11 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
 
           {/* GPS status + drop pin */}
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-            {searching
-              ? <Text style={styles.dropPinText}>searching nearby...</Text>
-              : gpsLocating
-                ? <Text style={styles.dropPinText}>locating you...</Text>
-                : gpsLocation
-                  ? <Text style={styles.dropPinText}>📍 results sorted by distance from you</Text>
-                  : <Text style={styles.dropPinText}>results may not be sorted by distance</Text>
+            {gpsLocating
+              ? <Text style={styles.dropPinText}>getting your location...</Text>
+              : gpsLocation
+                ? <Text style={styles.dropPinText}>📍 results near you</Text>
+                : <Text style={styles.dropPinText}>type to search</Text>
             }
             <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} onPress={dropPin} activeOpacity={0.7}>
               <Ionicons name="pin-outline" size={14} color="#888" />
@@ -347,7 +421,14 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
                 <Text style={styles.resultName}>{selected.name}</Text>
                 <Text style={styles.resultAddr} numberOfLines={1}>{selected.fullAddress}</Text>
               </View>
-              <TouchableOpacity onPress={() => { setSelected(null); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              {selected.distanceMi != null && (
+                <Text style={styles.resultDist}>
+                  {selected.distanceMi < 0.1
+                    ? `${Math.round(selected.distanceMi * 5280)} ft`
+                    : `${selected.distanceMi.toFixed(1)} mi`}
+                </Text>
+              )}
+              <TouchableOpacity onPress={() => setSelected(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="close-circle" size={18} color="#555" />
               </TouchableOpacity>
             </View>
@@ -356,28 +437,30 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef }) {
           {/* Error */}
           {error && !selected ? <Text style={styles.searchError}>{error}</Text> : null}
 
-          {/* Results list */}
-          {!selected && results.length > 0 && (
+          {/* Autocomplete suggestions */}
+          {!selected && suggestions.length > 0 && (
             <ScrollView
               style={styles.resultsList}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              {results.map((r, i) => (
+              {suggestions.map((s, i) => (
                 <TouchableOpacity
                   key={i}
                   style={styles.resultRow}
-                  onPress={() => pickResult(r)}
+                  onPress={() => pickSuggestion(s)}
                   activeOpacity={0.7}
                 >
                   <Ionicons name="location-outline" size={16} color="#555" style={{ marginRight: 10, marginTop: 1 }} />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.resultName} numberOfLines={1}>{r.name}</Text>
-                    {r.fullAddress ? <Text style={styles.resultAddr} numberOfLines={1}>{r.fullAddress}</Text> : null}
+                    <Text style={[styles.resultName, { fontWeight: '500' }]} numberOfLines={1}>{s.name}</Text>
+                    {s.fullAddress ? <Text style={styles.resultAddr} numberOfLines={1}>{s.fullAddress}</Text> : null}
                   </View>
-                  {r.distance != null && (
-                    <Text style={[styles.resultDist, { color: ORANGE }]}>
-                      {r.distance < 0.1 ? 'nearby' : `${r.distance.toFixed(1)} mi`}
+                  {s.distanceMi != null && (
+                    <Text style={styles.resultDist}>
+                      {s.distanceMi < 0.1
+                        ? `${Math.round(s.distanceMi * 5280)} ft`
+                        : `${s.distanceMi.toFixed(1)} mi`}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -410,7 +493,10 @@ export default function MapScreen({ navigation }) {
   const [smoothedPositions, setSmoothedPositions] = useState({});
   const [routeCoords, setRouteCoords] = useState(null); // Google Directions polyline
   const [memberETAs, setMemberETAs] = useState({}); // uid → { duration, distance }
+  const [crewRoutes, setCrewRoutes] = useState({}); // uid → coordinates[]
   const [isOffCenter, setIsOffCenter] = useState(false);
+  const [selectedMember, setSelectedMember] = useState(null);
+  const [trackingMember, setTrackingMember] = useState(false);
   const pillOpacity = useRef(new Animated.Value(0)).current;
   const pillTimeoutRef = useRef(null);
 
@@ -477,6 +563,7 @@ export default function MapScreen({ navigation }) {
     if (!destination || !location) {
       setRouteCoords(null);
       setMemberETAs({});
+      setCrewRoutes({});
       return;
     }
 
@@ -489,11 +576,13 @@ export default function MapScreen({ navigation }) {
         setRouteCoords(route?.coordinates ?? null);
       } catch { /* silent */ }
 
-      // ETAs for all crew members that have a known position
+      // ETAs + routes for all crew members that have a known position and haven't arrived
+      const activeMembers = crewMembers.filter(
+        (m) => m.latitude != null && m.longitude != null && !m.arrivedAtDestination
+      );
+
       try {
-        const origins = crewMembers
-          .filter((m) => m.latitude != null && m.longitude != null)
-          .map((m) => ({ uid: m.id, lat: m.latitude, lon: m.longitude }));
+        const origins = activeMembers.map((m) => ({ uid: m.id, lat: m.latitude, lon: m.longitude }));
         if (origins.length) {
           const etas = await getETAs(origins, dLat, dLon);
           const map = {};
@@ -501,10 +590,29 @@ export default function MapScreen({ navigation }) {
           setMemberETAs(map);
         }
       } catch { /* silent */ }
+
+      // Fetch route polylines for each active crew member
+      try {
+        const routeResults = await Promise.all(
+          activeMembers.map(async (m) => {
+            try {
+              const route = await getDirections(m.latitude, m.longitude, dLat, dLon);
+              return { uid: m.id, coords: route?.coordinates ?? null };
+            } catch {
+              return { uid: m.id, coords: null };
+            }
+          })
+        );
+        const routeMap = {};
+        routeResults.forEach(({ uid: memberId, coords }) => {
+          if (coords && coords.length > 1) routeMap[memberId] = coords;
+        });
+        setCrewRoutes(routeMap);
+      } catch { /* silent */ }
     }
 
     fetchAll();
-    etaIntervalRef.current = setInterval(fetchAll, 60_000);
+    etaIntervalRef.current = setInterval(fetchAll, 120_000);
     return () => { clearInterval(etaIntervalRef.current); etaIntervalRef.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [destination, location?.latitude, location?.longitude]);
@@ -773,17 +881,20 @@ export default function MapScreen({ navigation }) {
     (crew.memberProfiles || []).forEach((p) => {
       if (!seenIds.has(p.id) && visibleMemberIds.has(p.id) && p.latitude != null && p.longitude != null) {
         seenIds.add(p.id);
-        crewMembers.push({
+        const member = {
           id: p.id,
           name: p.name || 'Unknown',
           latitude: p.latitude,
           longitude: p.longitude,
           speed: p.speed ?? 0,
-          color: getMemberColor(p.id),
+          color: p.avatarColor || getMemberColor(p.id),
           photoURL: p.photoURL ?? null,
+          avatarColor: p.avatarColor ?? null,
           arrivedAtDestination: p.arrivedAtDestination ?? false,
           otwToDestination: p.otwToDestination ?? false,
-        });
+        };
+        console.log('[MapMarker] member data:', member.id, member.name, member.photoURL, member.avatarColor);
+        crewMembers.push(member);
       }
     });
   });
@@ -835,6 +946,20 @@ export default function MapScreen({ navigation }) {
     setAutoZoomed(true);
   }, [crewMembers.length, location, autoZoomed]);
 
+  // Follow selected member when tracking
+  useEffect(() => {
+    if (!selectedMember || !trackingMember) return;
+    const m = crewMembers.find((c) => c.id === selectedMember);
+    if (!m) return;
+    mapRef.current?.animateToRegion({
+      latitude: m.latitude,
+      longitude: m.longitude,
+      latitudeDelta: 0.01,
+      longitudeDelta: 0.01,
+    }, 800);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crewMembers, selectedMember, trackingMember]);
+
   // Active crew for meetup features
   const activeCrewId = selectedCrewId ?? (crews.length === 1 ? crews[0]?.id : null);
   const activeCrew = crews.find((c) => c.id === activeCrewId);
@@ -876,6 +1001,18 @@ export default function MapScreen({ navigation }) {
       await updateDoc(doc(db, 'crews', activeCrewId), { destination: destData });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       arrivedRef.current = false; // reset arrived flag when new destination set
+
+      // Auto-zoom to show full route from user to destination
+      if (mapRef.current && locationRef.current) {
+        const fitCoords = [
+          { latitude: locationRef.current.latitude, longitude: locationRef.current.longitude },
+          { latitude: result.latitude, longitude: result.longitude },
+        ];
+        mapRef.current.fitToCoordinates(fitCoords, {
+          edgePadding: { top: 80, right: 60, bottom: 200, left: 60 },
+          animated: true,
+        });
+      }
 
       // Notify all crew members
       const crew = crewsRef.current.find((c) => c.id === activeCrewId);
@@ -996,6 +1133,36 @@ export default function MapScreen({ navigation }) {
   return (
     <View style={styles.container}>
 
+      {/* ── Crew filter pills — above map, normal flow ── */}
+      {crews.length > 1 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.pillsContainer}
+          contentContainerStyle={styles.pillsContent}
+        >
+          <TouchableOpacity
+            style={[styles.pill, selectedCrewId === null && styles.pillActive]}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(null); }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.pillText, selectedCrewId === null && styles.pillTextActive]}>all crews</Text>
+          </TouchableOpacity>
+          {crews.map((crew) => (
+            <TouchableOpacity
+              key={crew.id}
+              style={[styles.pill, selectedCrewId === crew.id && styles.pillActive]}
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(crew.id); }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.pillText, selectedCrewId === crew.id && styles.pillTextActive]} numberOfLines={1}>
+                {crew.name}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
       {/* ── Map ─────────────────────────────────────────── */}
       <View style={styles.mapWrap}>
         <MapView
@@ -1016,14 +1183,18 @@ export default function MapScreen({ navigation }) {
           onRegionChange={onMapPan}
         >
 
-          {/* Self dot */}
+          {/* Self marker */}
           {location && (
             <Marker
               coordinate={{ latitude: location.latitude, longitude: location.longitude }}
-              anchor={{ x: 0.5, y: 0.5 }}
+              anchor={{ x: 0.5, y: 1 }}
               tracksViewChanges={false}
             >
-              <PulsingDot />
+              <CrewMarker
+                member={{ name: myProfile?.name || 'Me', avatarColor: ORANGE, color: ORANGE }}
+                speed={currentSpeedMph}
+                isSelected
+              />
             </Marker>
           )}
 
@@ -1036,6 +1207,20 @@ export default function MapScreen({ navigation }) {
             >
               <DestinationPin name={destination.name} />
             </Marker>
+          )}
+
+          {/* Crew routes to destination (gray dashed) */}
+          {destination && Object.entries(crewRoutes).map(([memberId, coords]) =>
+            coords && coords.length > 1 ? (
+              <Polyline
+                key={`crew-route-${memberId}`}
+                coordinates={coords}
+                strokeColor="#444444"
+                strokeWidth={2}
+                lineDashPattern={[5, 5]}
+                opacity={0.7}
+              />
+            ) : null
           )}
 
           {/* Driving route to destination */}
@@ -1072,31 +1257,45 @@ export default function MapScreen({ navigation }) {
               <Marker
                 key={m.id}
                 coordinate={pos}
-                anchor={{ x: 0.5, y: 0.5 }}
+                anchor={{ x: 0.5, y: 1 }}
                 tracksViewChanges={false}
+                onPress={() => {
+                  setSelectedMember(m.id);
+                  setTrackingMember(true);
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                }}
               >
-                <View style={styles.crewMarker}>
-                  {m.photoURL ? (
-                    <Image source={{ uri: m.photoURL }} style={styles.crewMarkerPhoto} />
-                  ) : (
-                    <View style={[styles.crewMarkerDot, { backgroundColor: m.color }]} />
-                  )}
-                  <Text style={styles.crewMarkerLabel}>{m.speed}mph</Text>
-                  {m.arrivedAtDestination && (
-                    <View style={styles.arrivedBadge}>
-                      <Text style={styles.arrivedBadgeText}>✓</Text>
-                    </View>
-                  )}
-                  {!m.arrivedAtDestination && m.otwToDestination && (
-                    <View style={styles.otwBadge}>
-                      <Text style={styles.otwBadgeText}>OTW</Text>
-                    </View>
-                  )}
-                </View>
+                <CrewMarker member={m} speed={m.speed} isSelected={selectedMember === m.id} />
               </Marker>
             );
           })}
         </MapView>
+
+        {/* Tracking card */}
+        {trackingMember && selectedMember && (() => {
+          const m = crewMembers.find((c) => c.id === selectedMember);
+          if (!m) return null;
+          return (
+            <View style={styles.trackingCard}>
+              <View style={[styles.trackingAvatar, { backgroundColor: m.avatarColor || m.color }]}>
+                {m.photoURL
+                  ? <Image source={{ uri: m.photoURL }} style={{ width: 36, height: 36, borderRadius: 18 }} />
+                  : <Text style={styles.trackingAvatarText}>{(m.name || '?').charAt(0).toUpperCase()}</Text>
+                }
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.trackingName}>tracking {m.name?.split(' ')[0]}</Text>
+                <Text style={styles.trackingSpeed}>{Math.round(m.speed || 0)} mph</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => { setTrackingMember(false); setSelectedMember(null); }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.trackingStop}>stop</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
 
         {/* Recenter pill — appears when user pans away */}
         <Animated.View style={[styles.recenterPill, { opacity: pillOpacity }]} pointerEvents={isOffCenter ? 'auto' : 'none'}>
@@ -1117,36 +1316,6 @@ export default function MapScreen({ navigation }) {
           <View style={styles.locatingBanner}>
             <Text style={styles.locatingText}>locating you...</Text>
           </View>
-        )}
-
-        {/* Crew filter pills */}
-        {crews.length > 1 && (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.pillsContainer}
-            contentContainerStyle={styles.pillsContent}
-          >
-            <TouchableOpacity
-              style={[styles.pill, selectedCrewId === null && styles.pillActive]}
-              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(null); }}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.pillText, selectedCrewId === null && styles.pillTextActive]}>all crews</Text>
-            </TouchableOpacity>
-            {crews.map((crew) => (
-              <TouchableOpacity
-                key={crew.id}
-                style={[styles.pill, selectedCrewId === crew.id && styles.pillActive]}
-                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSelectedCrewId(crew.id); }}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.pillText, selectedCrewId === crew.id && styles.pillTextActive]} numberOfLines={1}>
-                  {crew.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
         )}
 
         {/* Speed pill */}
@@ -1227,6 +1396,19 @@ export default function MapScreen({ navigation }) {
           <View style={styles.offlinePill}>
             <Text style={styles.offlinePillText}>none of your crew is online</Text>
           </View>
+        )}
+
+        {/* Set meetup button */}
+        {activeCrewId && (
+          <TouchableOpacity
+            style={styles.setMeetupRow}
+            onPress={() => setShowMeetupModal(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="location" size={16} color={ORANGE} style={{ marginRight: 8 }} />
+            <Text style={styles.setMeetupRowText}>set meetup destination</Text>
+            <Ionicons name="chevron-forward" size={16} color="#555" />
+          </TouchableOpacity>
         )}
 
         {/* Crew member rows */}
@@ -1314,21 +1496,6 @@ export default function MapScreen({ navigation }) {
 
         <View style={styles.divider} />
 
-        {/* Set meetup button — only when a crew is active */}
-        {activeCrewId && !destination && (
-          <TouchableOpacity
-            style={styles.meetupBtn}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setShowMeetupModal(true);
-            }}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="location-outline" size={14} color={ORANGE} />
-            <Text style={styles.meetupBtnText}>set meetup destination</Text>
-          </TouchableOpacity>
-        )}
-
         {/* Waze */}
         <TouchableOpacity style={styles.wazeRow} onPress={openWaze} activeOpacity={0.7}>
           <View style={styles.wazeIcon}>
@@ -1362,12 +1529,28 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
 
   recenterBtn: {
-    position: 'absolute', bottom: 20, right: 16,
+    position: 'absolute', bottom: 180, right: 16, zIndex: 50,
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: '#1a1a1a', borderWidth: 0.5, borderColor: '#2a2a2a',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 2 },
   },
+  trackingCard: {
+    position: 'absolute', top: 16, left: 12, right: 12, zIndex: 50,
+    backgroundColor: '#1a1a1a', borderRadius: 12, padding: 12,
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: 0.5, borderColor: ORANGE,
+  },
+  trackingAvatar: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    marginRight: 10, overflow: 'hidden',
+  },
+  trackingAvatarText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+  trackingName: { color: '#fff', fontWeight: '500', fontSize: 13 },
+  trackingSpeed: { color: '#888', fontSize: 11, marginTop: 1 },
+  trackingStop: { color: ORANGE, fontSize: 13, fontWeight: '500' },
+
   recenterPill: {
     position: 'absolute', top: 14, alignSelf: 'center',
     left: 0, right: 0, alignItems: 'center',
@@ -1434,9 +1617,9 @@ const styles = StyleSheet.create({
   },
   otwBadgeText: { color: '#fff', fontSize: 8, fontWeight: '800' },
 
-  // Filter pills
-  pillsContainer: { position: 'absolute', top: 10, left: 0, right: 0 },
-  pillsContent: { paddingHorizontal: 12, gap: 8 },
+  // Filter pills — normal flow above map
+  pillsContainer: { backgroundColor: '#111' },
+  pillsContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
   pill: {
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
     backgroundColor: 'rgba(17,17,17,0.85)', borderWidth: 1, borderColor: '#2a2a2a',
@@ -1448,7 +1631,7 @@ const styles = StyleSheet.create({
 
   // Speed pill
   speedPill: {
-    position: 'absolute', bottom: 52, left: 14,
+    position: 'absolute', bottom: 180, left: 14, zIndex: 50,
     flexDirection: 'row', alignItems: 'baseline', gap: 3,
     backgroundColor: 'rgba(17,17,17,0.88)',
     borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6,
@@ -1459,7 +1642,7 @@ const styles = StyleSheet.create({
 
   // Radio pill
   radioPill: {
-    position: 'absolute', bottom: 12, alignSelf: 'center',
+    position: 'absolute', bottom: 12, alignSelf: 'center', zIndex: 50,
     flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: 'rgba(17,17,17,0.88)',
     borderRadius: 20, paddingHorizontal: 14, paddingVertical: 7,
@@ -1467,6 +1650,14 @@ const styles = StyleSheet.create({
   },
   radioPillText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   radioPillTextOff: { color: '#555' },
+
+  setMeetupRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#1a1a1a', borderRadius: 10,
+    padding: 12, marginBottom: 8,
+    borderWidth: 0.5, borderColor: '#2a2a2a',
+  },
+  setMeetupRowText: { color: '#fff', fontSize: 13, flex: 1 },
 
   // Sheet
   sheet: {
@@ -1617,4 +1808,5 @@ const styles = StyleSheet.create({
   },
   resultDist: { color: ORANGE, fontSize: 12, fontWeight: '600', marginLeft: 8, marginTop: 2 },
   resultAddr: { color: '#555', fontSize: 11, marginTop: 2 },
+  resultDist: { color: ORANGE, fontSize: 12, fontWeight: '600', marginRight: 8 },
 });
