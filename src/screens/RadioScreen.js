@@ -32,10 +32,10 @@ function getInitials(name) {
   return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
-function getMemberColor(uid) {
-  const COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
-  const n = (uid || 'x').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return COLORS[n % COLORS.length];
+function getAvatarColor(uid) {
+  const colors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#f59e0b', '#ec4899'];
+  const index = uid?.charCodeAt(0) % colors.length || 0;
+  return colors[index];
 }
 
 function isOnline(profile) {
@@ -88,7 +88,7 @@ function Waveform() {
 // ─── Avatar ───────────────────────────────────────────────────────────────────
 
 function Avatar({ photoURL, name, uid, size = 32, dimmed = false }) {
-  const color = getMemberColor(uid);
+  const color = getAvatarColor(uid);
   const opacity = dimmed ? 0.35 : 1;
   if (photoURL) {
     return (

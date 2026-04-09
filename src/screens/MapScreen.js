@@ -28,7 +28,6 @@ const STOP_DELAY_MS = 30 * 1000;
 const TRAIL_MAX_AGE_MS = 5 * 60 * 1000;
 const TRAIL_MAX_POINTS = 30;
 const ARRIVED_THRESHOLD_MILES = 0.124; // ~200 meters
-const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
 
 const darkMapStyle = [
   { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
@@ -70,9 +69,10 @@ function haversineMiles(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function getMemberColor(uid) {
-  const n = (uid || 'x').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return MEMBER_COLORS[n % MEMBER_COLORS.length];
+function getAvatarColor(uid) {
+  const colors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#f59e0b', '#ec4899'];
+  const index = uid?.charCodeAt(0) % colors.length || 0;
+  return colors[index];
 }
 
 function getInitials(name) {
@@ -144,7 +144,7 @@ function CrewMarker({ member, speed, isSelected = false }) {
       {/* Avatar circle — initials only (remote images unreliable in PROVIDER_GOOGLE markers) */}
       <View style={{
         width: 44, height: 44, borderRadius: 22,
-        backgroundColor: member.avatarColor || member.color || ORANGE,
+        backgroundColor: member.color,
         borderWidth: 2.5, borderColor,
         alignItems: 'center', justifyContent: 'center',
       }}>
@@ -506,6 +506,7 @@ export default function MapScreen({ navigation }) {
         const data = snap.data();
         setMyProfile({ id: uid, ...data });
         setOtw(data.otwToDestination ?? false);
+        console.log('[MapScreen] myProfile loaded, uid-based color:', getAvatarColor(uid));
       }
     });
   }, [uid]);
@@ -861,13 +862,11 @@ export default function MapScreen({ navigation }) {
           latitude: p.latitude,
           longitude: p.longitude,
           speed: p.speed ?? 0,
-          color: p.avatarColor || getMemberColor(p.id),
+          color: getAvatarColor(p.id),
           photoURL: p.photoURL ?? null,
-          avatarColor: p.avatarColor ?? null,
           arrivedAtDestination: p.arrivedAtDestination ?? false,
           otwToDestination: p.otwToDestination ?? false,
         };
-        console.log('[MapMarker] member data:', member.id, member.name, member.photoURL, member.avatarColor);
         crewMembers.push(member);
       }
     });
@@ -1117,7 +1116,7 @@ export default function MapScreen({ navigation }) {
               tracksViewChanges={false}
             >
               <CrewMarker
-                member={{ name: myProfile?.name || 'Me', avatarColor: ORANGE, color: ORANGE }}
+                member={{ name: myProfile?.name || 'Me', color: getAvatarColor(uid) }}
                 speed={currentSpeedMph}
                 isSelected
               />
@@ -1203,7 +1202,7 @@ export default function MapScreen({ navigation }) {
           if (!m) return null;
           return (
             <View style={styles.trackingCard}>
-              <View style={[styles.trackingAvatar, { backgroundColor: m.avatarColor || m.color }]}>
+              <View style={[styles.trackingAvatar, { backgroundColor: m.color }]}>
                 {m.photoURL
                   ? <Image source={{ uri: m.photoURL }} style={{ width: 36, height: 36, borderRadius: 18 }} />
                   : <Text style={styles.trackingAvatarText}>{(m.name || '?').charAt(0).toUpperCase()}</Text>

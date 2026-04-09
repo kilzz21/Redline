@@ -112,13 +112,12 @@ async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, m
   }
 }
 
-const MEMBER_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#f59e0b', '#06b6d4'];
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function getMemberColor(uid) {
-  const n = (uid || 'x').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  return MEMBER_COLORS[n % MEMBER_COLORS.length];
+function getAvatarColor(uid) {
+  const colors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#f59e0b', '#ec4899'];
+  const index = uid?.charCodeAt(0) % colors.length || 0;
+  return colors[index];
 }
 
 function getInitials(name) {
@@ -159,7 +158,7 @@ function PulsingOnlineDot() {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function Avatar({ photoURL, name, uid, size = 40, style }) {
-  const color = getMemberColor(uid);
+  const color = getAvatarColor(uid);
   if (photoURL) {
     return (
       <Image

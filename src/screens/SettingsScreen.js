@@ -15,11 +15,6 @@ import { auth, db } from '../config/firebase';
 
 const ORANGE = '#f97316';
 
-const AVATAR_COLORS = [
-  '#f97316', '#3b82f6', '#22c55e', '#a855f7',
-  '#ef4444', '#f59e0b', '#06b6d4', '#ec4899',
-];
-
 // ─── Re-auth Modal ────────────────────────────────────────────────────────────
 
 function ReauthModal({ visible, onSuccess, onCancel, title, description }) {
@@ -191,7 +186,6 @@ export default function SettingsScreen({ visible, onClose, onEditProfile }) {
   const insets = useSafeAreaInsets();
   const [notifications, setNotifications] = useState({ newInvite: true, crewOnline: true, crewRadio: false });
   const [statsPublic, setStatsPublic] = useState(true);
-  const [avatarColor, setAvatarColor] = useState(ORANGE);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showReauth, setShowReauth] = useState(false);
   const [reauthAction, setReauthAction] = useState(null);
@@ -206,7 +200,6 @@ export default function SettingsScreen({ visible, onClose, onEditProfile }) {
       if (!snap.exists()) return;
       const data = snap.data();
       setStatsPublic(data.statsPublic !== false);
-      if (data.avatarColor) setAvatarColor(data.avatarColor);
       if (data.notifications) {
         setNotifications((prev) => ({ ...prev, ...data.notifications }));
       }
@@ -269,13 +262,6 @@ export default function SettingsScreen({ visible, onClose, onEditProfile }) {
     );
   };
 
-  const handleAvatarColor = (color) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setAvatarColor(color);
-    const uid = auth.currentUser?.uid;
-    if (uid) updateDoc(doc(db, 'users', uid), { avatarColor: color }).catch(() => {});
-  };
-
   const toggleStatsPublic = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const next = !statsPublic;
@@ -323,29 +309,6 @@ export default function SettingsScreen({ visible, onClose, onEditProfile }) {
               label="change password"
               onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setShowChangePassword(true); }}
             />
-          </View>
-
-          {/* Avatar color */}
-          <SectionHeader title="avatar color" />
-          <View style={styles.section}>
-            <View style={styles.colorPickerRow}>
-              {AVATAR_COLORS.map((c) => (
-                <TouchableOpacity
-                  key={c}
-                  onPress={() => handleAvatarColor(c)}
-                  activeOpacity={0.8}
-                  style={[
-                    styles.colorSwatch,
-                    { backgroundColor: c },
-                    avatarColor === c && styles.colorSwatchSelected,
-                  ]}
-                >
-                  {avatarColor === c && (
-                    <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>✓</Text>
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
           </View>
 
           {/* Notifications */}
@@ -483,18 +446,6 @@ const styles = StyleSheet.create({
   },
   logOutText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 
-  colorPickerRow: {
-    flexDirection: 'row', flexWrap: 'wrap',
-    padding: 14, gap: 10,
-  },
-  colorSwatch: {
-    width: 40, height: 40, borderRadius: 20,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  colorSwatchSelected: {
-    borderWidth: 3, borderColor: '#fff',
-    shadowColor: '#fff', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
-  },
 
   deleteBtn: { marginTop: 8, paddingVertical: 12, alignItems: 'center' },
   deleteText: { color: '#444', fontSize: 13, fontWeight: '500' },
