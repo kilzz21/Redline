@@ -47,6 +47,9 @@ export default {
       ],
     ],
     extra: {
+      eas: {
+        projectId: 'e270e189-f79a-4bd9-b69d-1066aa145b4c',
+      },
       googlePlacesKey: process.env.GOOGLE_MAPS_API_KEY,
       agoraAppId: process.env.AGORA_APP_ID,
       firebaseApiKey: process.env.FIREBASE_API_KEY,
