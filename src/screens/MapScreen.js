@@ -23,8 +23,9 @@ import { ORANGE, darkMapStyle, toDate, getInitials, getAvatarColor } from '../ut
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const SPEED_THRESHOLD_MPH = 5;
-const PRE_DRIVE_MS = 2 * 60 * 1000;
-const STOP_DELAY_MS = 30 * 1000;
+const STOP_DELAY_MS = 5 * 60 * 1000;   // 5 minutes stationary → end drive
+const MIN_DRIVE_MILES = 0.5;            // discard drives shorter than this
+const MIN_DRIVE_MS = 3 * 60 * 1000;    // discard drives under 3 minutes
 const TRAIL_MAX_AGE_MS = 5 * 60 * 1000;
 const TRAIL_MAX_POINTS = 30;
 const ARRIVED_THRESHOLD_MILES = 0.124; // ~200 meters
@@ -528,6 +529,8 @@ export default function MapScreen({ navigation }) {
   // tracksViewChanges stays true until image loads, then flips false (PROVIDER_GOOGLE snapshot timing)
   const [markerImageLoaded, setMarkerImageLoaded] = useState({});
   const [selfImageLoaded, setSelfImageLoaded] = useState(false);
+  // 'IDLE' | 'DRIVING' | 'STOPPING' — drives the paused indicator on the speed pill
+  const [driveState, setDriveState] = useState('IDLE');
 
   const crewsRef = useRef([]);
   crewsRef.current = crews;
@@ -538,7 +541,6 @@ export default function MapScreen({ navigation }) {
   const trailsRef = useRef({});
   const driveStateRef = useRef('IDLE');
   const driveDataRef = useRef(null);
-  const preDriveTimerRef = useRef(null);
   const stopTimerRef = useRef(null);
   const arrivedRef = useRef(false);
   const destinationRef = useRef(null);
@@ -758,19 +760,28 @@ export default function MapScreen({ navigation }) {
     }
 
     async function saveDrive() {
-      driveStateRef.current = 'IDLE';
       clearTimeout(stopTimerRef.current);
       stopTimerRef.current = null;
       const drive = driveDataRef.current;
       driveDataRef.current = null;
+      driveStateRef.current = 'IDLE';
+      setDriveState('IDLE');
       const currentUid = auth.currentUser?.uid;
       if (!drive || !currentUid || drive.coords.length < 2) return;
       const endTime = new Date();
       const { startTime, coords, speeds, topSpeed } = drive;
+
+      // ── Minimum duration check — discard if under 3 minutes
+      const durationMs = endTime - new Date(startTime);
+      if (durationMs < MIN_DRIVE_MS) return;
+
+      // ── Minimum distance check — discard if under 0.5 miles
       let distanceMiles = 0;
       for (let i = 1; i < coords.length; i++) {
         distanceMiles += haversineMiles(coords[i - 1].lat, coords[i - 1].lng, coords[i].lat, coords[i].lng);
       }
+      if (distanceMiles < MIN_DRIVE_MILES) return;
+
       const avgSpeed = speeds.length ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
       const startHour = toDate(startTime)?.getHours() ?? 0;
       const startDay = toDate(startTime)?.getDay() ?? 0;
@@ -804,43 +815,45 @@ export default function MapScreen({ navigation }) {
 
     function processDrive(coords, speedMph) {
       const state = driveStateRef.current;
+      const moving = speedMph >= SPEED_THRESHOLD_MPH;
+
       if (state === 'IDLE') {
-        if (speedMph >= SPEED_THRESHOLD_MPH) {
-          driveStateRef.current = 'PRE_DRIVE';
+        if (moving) {
+          // Start recording immediately — validity (distance/duration) checked at save time
+          driveStateRef.current = 'DRIVING';
+          setDriveState('DRIVING');
           driveDataRef.current = {
             startTime: new Date(),
             coords: [{ lat: coords.latitude, lng: coords.longitude, t: Date.now() }],
-            speeds: [speedMph], topSpeed: speedMph,
+            speeds: [speedMph],
+            topSpeed: speedMph,
           };
-          preDriveTimerRef.current = setTimeout(() => {
-            if (driveStateRef.current === 'PRE_DRIVE') driveStateRef.current = 'DRIVING';
-          }, PRE_DRIVE_MS);
-        }
-      } else if (state === 'PRE_DRIVE') {
-        if (speedMph >= SPEED_THRESHOLD_MPH) {
-          driveDataRef.current.coords.push({ lat: coords.latitude, lng: coords.longitude, t: Date.now() });
-          driveDataRef.current.speeds.push(speedMph);
-          if (speedMph > driveDataRef.current.topSpeed) driveDataRef.current.topSpeed = speedMph;
-        } else {
-          clearTimeout(preDriveTimerRef.current);
-          driveStateRef.current = 'IDLE';
-          driveDataRef.current = null;
         }
       } else if (state === 'DRIVING') {
-        if (speedMph >= SPEED_THRESHOLD_MPH) {
-          driveDataRef.current.coords.push({ lat: coords.latitude, lng: coords.longitude, t: Date.now() });
+        driveDataRef.current.coords.push({ lat: coords.latitude, lng: coords.longitude, t: Date.now() });
+        if (moving) {
           driveDataRef.current.speeds.push(speedMph);
           if (speedMph > driveDataRef.current.topSpeed) driveDataRef.current.topSpeed = speedMph;
-          if (stopTimerRef.current) { clearTimeout(stopTimerRef.current); stopTimerRef.current = null; }
+          // Resume from stopped — clear the stop timer
+          if (stopTimerRef.current) {
+            clearTimeout(stopTimerRef.current);
+            stopTimerRef.current = null;
+            driveStateRef.current = 'DRIVING';
+            setDriveState('DRIVING');
+          }
         } else if (!stopTimerRef.current) {
+          // Stopped — start the 5-minute countdown
           driveStateRef.current = 'STOPPING';
+          setDriveState('STOPPING');
           stopTimerRef.current = setTimeout(() => saveDrive(), STOP_DELAY_MS);
         }
       } else if (state === 'STOPPING') {
-        if (speedMph >= SPEED_THRESHOLD_MPH) {
+        if (moving) {
+          // Moving again — cancel the stop timer, resume drive
           clearTimeout(stopTimerRef.current);
           stopTimerRef.current = null;
           driveStateRef.current = 'DRIVING';
+          setDriveState('DRIVING');
           driveDataRef.current.coords.push({ lat: coords.latitude, lng: coords.longitude, t: Date.now() });
           driveDataRef.current.speeds.push(speedMph);
           if (speedMph > driveDataRef.current.topSpeed) driveDataRef.current.topSpeed = speedMph;
@@ -896,7 +909,6 @@ export default function MapScreen({ navigation }) {
 
     return () => {
       watchRef.current?.remove();
-      clearTimeout(preDriveTimerRef.current);
       if (driveStateRef.current === 'DRIVING' || driveStateRef.current === 'STOPPING') {
         clearTimeout(stopTimerRef.current);
         saveDrive();
@@ -1358,10 +1370,19 @@ export default function MapScreen({ navigation }) {
         )}
 
         {/* Speed pill */}
-        {currentSpeedMph >= SPEED_THRESHOLD_MPH && (
-          <View style={styles.speedPill}>
-            <Text style={styles.speedPillText}>{currentSpeedMph}</Text>
-            <Text style={styles.speedPillUnit}>mph</Text>
+        {(currentSpeedMph >= SPEED_THRESHOLD_MPH || driveState === 'STOPPING') && (
+          <View style={[styles.speedPill, driveState === 'STOPPING' && styles.speedPillPaused]}>
+            {driveState === 'STOPPING' ? (
+              <>
+                <View style={styles.speedPillPauseDot} />
+                <Text style={styles.speedPillPauseText}>paused</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.speedPillText}>{currentSpeedMph}</Text>
+                <Text style={styles.speedPillUnit}>mph</Text>
+              </>
+            )}
           </View>
         )}
 
@@ -1668,6 +1689,9 @@ const styles = StyleSheet.create({
   },
   speedPillText: { color: ORANGE, fontSize: 18, fontWeight: '700' },
   speedPillUnit: { color: '#888', fontSize: 11, fontWeight: '500' },
+  speedPillPaused: { borderColor: '#3a3a3a' },
+  speedPillPauseDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#555' },
+  speedPillPauseText: { color: '#555', fontSize: 12, fontWeight: '500' },
 
   // Radio pill
   radioPill: {
