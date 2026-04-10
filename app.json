@@ -25,7 +25,7 @@
         "NSContactsUsageDescription": "Redline uses your contacts to find friends already on the app",
         "UIBackgroundModes": ["remote-notification", "audio", "voip"]
       },
-      "bundleIdentifier": "com.kilzz21.redline"
+      "bundleIdentifier": "com.elamine.redlineapp"
     },
     "android": {
       "adaptiveIcon": {
