@@ -127,7 +127,7 @@ function PulsingDot() {
 
 // ─── Crew map marker ─────────────────────────────────────────────────────────
 
-function CrewMarker({ member, speed, isSelected = false }) {
+function CrewMarker({ member, speed, isSelected = false, onImageLoad }) {
   const borderColor = isSelected ? ORANGE : '#fff';
   return (
     <View style={{ alignItems: 'center' }}>
@@ -141,16 +141,26 @@ function CrewMarker({ member, speed, isSelected = false }) {
           {Math.round(speed || 0)} mph
         </Text>
       </View>
-      {/* Avatar circle — initials only (remote images unreliable in PROVIDER_GOOGLE markers) */}
+      {/* Avatar circle */}
       <View style={{
         width: 44, height: 44, borderRadius: 22,
         backgroundColor: member.color,
         borderWidth: 2.5, borderColor,
         alignItems: 'center', justifyContent: 'center',
+        overflow: 'hidden',
       }}>
-        <Text style={{ color: '#fff', fontSize: 16, fontWeight: '500' }}>
-          {(member.name || '?').charAt(0).toUpperCase()}
-        </Text>
+        {member.photoURL ? (
+          <Image
+            source={{ uri: member.photoURL }}
+            style={{ width: 44, height: 44 }}
+            onLoad={onImageLoad}
+            onError={onImageLoad}
+          />
+        ) : (
+          <Text style={{ color: '#fff', fontSize: 16, fontWeight: '500' }}>
+            {(member.name || '?').charAt(0).toUpperCase()}
+          </Text>
+        )}
       </View>
       {/* Down-arrow pin */}
       <View style={{
@@ -230,54 +240,117 @@ const getPlaceDetails = async (placeId) => {
   };
 };
 
-// Returns lightweight prediction objects instantly — coordinates fetched only on tap.
-const getAutocompleteSuggestions = async (input, lat, lon) => {
+function formatDistLabel(distM) {
+  if (distM == null) return null;
+  return distM < 1609
+    ? `${Math.round(distM * 3.281)} ft`
+    : `${(distM / 1609.34).toFixed(1)} mi`;
+}
+
+// Autocomplete — fast, structured, works well when spelling is correct
+const fetchAutocomplete = async (input, lat, lon) => {
   const hasLocation = lat != null && lon != null;
   const body = {
     input,
     languageCode: 'en',
-    includeQueryPredictions: false,
     ...(hasLocation ? {
       origin: { latitude: lat, longitude: lon },
       locationBias: {
         circle: { center: { latitude: lat, longitude: lon }, radius: 30000.0 },
       },
-      rankPreference: 'DISTANCE',
     } : {}),
   };
+  try {
+    const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': GOOGLE_KEY,
+        'X-Ios-Bundle-Identifier': 'com.kilzz21.redline',
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.suggestions) return [];
+    return data.suggestions
+      .filter((s) => s.placePrediction)
+      .map((s) => {
+        const p = s.placePrediction;
+        const distM = p.distanceMeters ?? null;
+        return {
+          placeId: p.placeId,
+          name: p.structuredFormat?.mainText?.text || p.text?.text || '',
+          fullAddress: p.structuredFormat?.secondaryText?.text || '',
+          distLabel: formatDistLabel(distM),
+          distanceMeters: distM,
+        };
+      });
+  } catch { return []; }
+};
 
-  const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': GOOGLE_KEY,
-      'X-Ios-Bundle-Identifier': 'com.kilzz21.redline',
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!data.suggestions) return [];
-
-  // Map predictions to display objects — no extra detail fetches here
-  return data.suggestions
-    .filter((s) => s.placePrediction)
-    .map((s) => {
-      const p = s.placePrediction;
-      const distM = p.distanceMeters ?? null;
-      let distLabel = null;
-      if (distM != null) {
-        distLabel = distM < 1609
-          ? `${Math.round(distM * 3.281)}ft`
-          : `${(distM / 1609.34).toFixed(1)}mi`;
-      }
+// Text Search — typo-tolerant, handles "mcdonalds" → "McDonald's", natural language, etc.
+const fetchTextSearch = async (input, lat, lon) => {
+  const hasLocation = lat != null && lon != null;
+  const body = {
+    textQuery: input,
+    languageCode: 'en',
+    maxResultCount: 10,
+    ...(hasLocation ? {
+      locationBias: {
+        circle: { center: { latitude: lat, longitude: lon }, radius: 30000.0 },
+      },
+    } : {}),
+  };
+  try {
+    const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': GOOGLE_KEY,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location',
+        'X-Ios-Bundle-Identifier': 'com.kilzz21.redline',
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.places) return [];
+    return data.places.map((p) => {
+      const distM = (lat != null && p.location)
+        ? haversineMiles(lat, lon, p.location.latitude, p.location.longitude) * 1609.34
+        : null;
       return {
-        placeId: p.placeId,
-        name: p.structuredFormat?.mainText?.text || p.text?.text || '',
-        fullAddress: p.structuredFormat?.secondaryText?.text || '',
-        distLabel,
+        placeId: p.id,
+        name: p.displayName?.text || '',
+        fullAddress: p.formattedAddress || '',
+        distLabel: formatDistLabel(distM),
         distanceMeters: distM,
+        // store coords so tapping a text-search result skips the detail fetch
+        latitude: p.location?.latitude ?? null,
+        longitude: p.location?.longitude ?? null,
       };
     });
+  } catch { return []; }
+};
+
+// Run both in parallel, merge deduped by placeId, sort by distance
+const getAutocompleteSuggestions = async (input, lat, lon) => {
+  const [acResults, tsResults] = await Promise.all([
+    fetchAutocomplete(input, lat, lon),
+    fetchTextSearch(input, lat, lon),
+  ]);
+
+  // Merge: autocomplete first (has distanceMeters from API), fill in text search extras
+  const seen = new Set();
+  const merged = [];
+  for (const r of [...acResults, ...tsResults]) {
+    if (!seen.has(r.placeId)) {
+      seen.add(r.placeId);
+      merged.push(r);
+    }
+  }
+
+  merged.sort((a, b) => (a.distanceMeters ?? Infinity) - (b.distanceMeters ?? Infinity));
+  return merged.slice(0, 8);
 };
 
 function SetMeetupModal({ visible, onClose, onSet, mapCenterRef, userLocation }) {
@@ -304,17 +377,22 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef, userLocation })
       try {
         const hits = await getAutocompleteSuggestions(text, gpsLocation?.latitude, gpsLocation?.longitude);
         setSuggestions(hits);
-        if (!hits.length) setError('no results near you');
-      } catch {
+        if (!hits.length) setError('no results found');
+      } catch (e) {
+        console.error('[Places autocomplete] fetch error:', e.message);
         setError('search failed — check your connection');
       }
     }, 150);
   };
 
-  // Fetch coordinates only when user taps a result — keeps the suggestion list instant
+  // If text search already gave us coords, use them directly; otherwise fetch detail
   const pickSuggestion = async (s) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSuggestions([]);
+    if (s.latitude != null && s.longitude != null) {
+      setSelected(s);
+      return;
+    }
     setFetchingDetail(true);
     try {
       const detail = await getPlaceDetails(s.placeId);
@@ -473,7 +551,8 @@ export default function MapScreen({ navigation }) {
   const [permDenied, setPermDenied] = useState(false);
   const [selectedCrewId, setSelectedCrewId] = useState(null);
   const [currentSpeedMph, setCurrentSpeedMph] = useState(0);
-  const [autoZoomed, setAutoZoomed] = useState(false);
+  // 'self' = follow own marker | 'member' = follow selected member | 'free' = user panned away
+  const [followMode, setFollowMode] = useState('self');
   const [myProfile, setMyProfile] = useState(null);
   const [destination, setDestination] = useState(null); // { name, latitude, longitude, setBy, setByName }
   const [showMeetupModal, setShowMeetupModal] = useState(false);
@@ -483,7 +562,9 @@ export default function MapScreen({ navigation }) {
   const [memberETAs, setMemberETAs] = useState({}); // uid → { duration, distance }
   const [crewRoutes, setCrewRoutes] = useState({}); // uid → coordinates[]
   const [selectedMember, setSelectedMember] = useState(null);
-  const [trackingMember, setTrackingMember] = useState(false);
+  // tracksViewChanges stays true until image loads, then flips false (PROVIDER_GOOGLE snapshot timing)
+  const [markerImageLoaded, setMarkerImageLoaded] = useState({});
+  const [selfImageLoaded, setSelfImageLoaded] = useState(false);
 
   const crewsRef = useRef([]);
   crewsRef.current = crews;
@@ -515,9 +596,11 @@ export default function MapScreen({ navigation }) {
     return onSnapshot(doc(db, 'users', uid), (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        setMyProfile({ id: uid, ...data });
+        setMyProfile((prev) => {
+          if (prev?.photoURL !== data.photoURL) setSelfImageLoaded(false);
+          return { id: uid, ...data };
+        });
         setOtw(data.otwToDestination ?? false);
-        console.log('[MapScreen] myProfile loaded, uid-based color:', getAvatarColor(uid));
       }
     });
   }, [uid]);
@@ -919,33 +1002,38 @@ export default function MapScreen({ navigation }) {
     ? haversineMiles(location.latitude, location.longitude, destination.latitude, destination.longitude)
     : null;
 
-  // Auto-zoom to fit all crew on first load
+  // ── Self-follow: pan map with user whenever followMode is 'self' ─────────────
+  const lastSelfPosRef = useRef(null);
   useEffect(() => {
-    if (autoZoomed || crewMembers.length === 0 || !location || !mapRef.current) return;
-    const coords = [
-      { latitude: location.latitude, longitude: location.longitude },
-      ...crewMembers.map((m) => ({ latitude: m.latitude, longitude: m.longitude })),
-    ];
-    mapRef.current.fitToCoordinates(coords, {
-      edgePadding: { top: 60, right: 40, bottom: 60, left: 40 },
-      animated: true,
-    });
-    setAutoZoomed(true);
-  }, [crewMembers.length, location, autoZoomed]);
+    if (followMode !== 'self' || !location || !mapRef.current) return;
+    const last = lastSelfPosRef.current;
+    // Only animate if moved >3m to avoid jitter while standing still
+    if (last && haversineMiles(last.latitude, last.longitude, location.latitude, location.longitude) < 0.002) return;
+    lastSelfPosRef.current = { latitude: location.latitude, longitude: location.longitude };
+    mapRef.current.animateCamera(
+      { center: { latitude: location.latitude, longitude: location.longitude } },
+      { duration: 300 }
+    );
+  }, [location, followMode]);
 
-  // Follow selected member when tracking
+  // ── Member-follow: pan map with tracked member when followMode is 'member' ───
+  const lastTrackedPosRef = useRef(null);
   useEffect(() => {
-    if (!selectedMember || !trackingMember) return;
+    if (followMode !== 'member' || !selectedMember) {
+      lastTrackedPosRef.current = null;
+      return;
+    }
     const m = crewMembers.find((c) => c.id === selectedMember);
     if (!m) return;
-    mapRef.current?.animateToRegion({
-      latitude: m.latitude,
-      longitude: m.longitude,
-      latitudeDelta: 0.01,
-      longitudeDelta: 0.01,
-    }, 800);
+    const last = lastTrackedPosRef.current;
+    if (last && haversineMiles(last.latitude, last.longitude, m.latitude, m.longitude) < 0.01) return;
+    lastTrackedPosRef.current = { latitude: m.latitude, longitude: m.longitude };
+    mapRef.current?.animateCamera(
+      { center: { latitude: m.latitude, longitude: m.longitude } },
+      { duration: 600 }
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crewMembers, selectedMember, trackingMember]);
+  }, [crewMembers, selectedMember, followMode]);
 
   // Active crew for meetup features
   const activeCrewId = selectedCrewId ?? (crews.length === 1 ? crews[0]?.id : null);
@@ -962,7 +1050,7 @@ export default function MapScreen({ navigation }) {
     ? 'create a crew to see members here'
     : `just you · ${filterLabel}`;
 
-  const region = location
+  const initialRegion = location
     ? { latitude: location.latitude, longitude: location.longitude, latitudeDelta: 0.015, longitudeDelta: 0.015 }
     : { latitude: 34.0522, longitude: -118.2437, latitudeDelta: 0.015, longitudeDelta: 0.015 };
 
@@ -1084,16 +1172,23 @@ export default function MapScreen({ navigation }) {
   }, [otw, activeCrewId, destination, uid]);
 
   const recenter = () => {
-    if (!location) return;
-    mapRef.current?.animateToRegion({
-      latitude: location.latitude,
-      longitude: location.longitude,
-      latitudeDelta: 0.01,
-      longitudeDelta: 0.01,
-    }, 500);
+    setSelectedMember(null);
+    setFollowMode('self');
+    lastSelfPosRef.current = null; // force immediate pan on next location tick
+    if (location) {
+      mapRef.current?.animateCamera(
+        { center: { latitude: location.latitude, longitude: location.longitude } },
+        { duration: 500 }
+      );
+    }
   };
 
-  const onMapPan = (region) => {
+  const onMapPanDrag = () => {
+    // User touched and dragged — break out of any follow mode
+    if (followMode !== 'free') setFollowMode('free');
+  };
+
+  const onMapRegionChange = (region) => {
     mapCenterRef.current = { latitude: region.latitude, longitude: region.longitude };
   };
 
@@ -1108,7 +1203,7 @@ export default function MapScreen({ navigation }) {
           ref={mapRef}
           provider={PROVIDER_GOOGLE}
           style={styles.map}
-          region={region}
+          initialRegion={initialRegion}
           customMapStyle={darkMapStyle}
           showsUserLocation={false}
           followsUserLocation={false}
@@ -1119,23 +1214,9 @@ export default function MapScreen({ navigation }) {
           rotateEnabled={false}
           minZoomLevel={3}
           maxZoomLevel={18}
-          onRegionChange={onMapPan}
+          onRegionChange={onMapRegionChange}
+          onPanDrag={onMapPanDrag}
         >
-
-          {/* Self marker */}
-          {location && (
-            <Marker
-              coordinate={{ latitude: location.latitude, longitude: location.longitude }}
-              anchor={{ x: 0.5, y: 1 }}
-              tracksViewChanges
-            >
-              <CrewMarker
-                member={{ name: myProfile?.name || 'Me', color: getAvatarColor(uid) }}
-                speed={currentSpeedMph}
-                isSelected
-              />
-            </Marker>
-          )}
 
           {/* Destination pin */}
           {destination && (
@@ -1190,28 +1271,51 @@ export default function MapScreen({ navigation }) {
           })}
 
           {/* Crew markers (with smooth interpolation) */}
-          {crewMembers.map((m) => {
+          {[...crewMembers].sort((a, b) => (a.id === selectedMember ? 1 : b.id === selectedMember ? -1 : 0)).map((m) => {
             const pos = smoothedPositions[m.id] ?? { latitude: m.latitude, longitude: m.longitude };
+            const isSelected = selectedMember === m.id;
             return (
               <Marker
                 key={m.id}
                 coordinate={pos}
                 anchor={{ x: 0.5, y: 1 }}
-                tracksViewChanges={false}
+                tracksViewChanges={!markerImageLoaded[m.id] || isSelected}
                 onPress={() => {
+                  lastTrackedPosRef.current = null; // force immediate pan
                   setSelectedMember(m.id);
-                  setTrackingMember(true);
+                  setFollowMode('member');
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                 }}
               >
-                <CrewMarker member={m} speed={m.speed} isSelected={selectedMember === m.id} />
+                <CrewMarker
+                  member={m}
+                  speed={m.speed}
+                  isSelected={isSelected}
+                  onImageLoad={() => setMarkerImageLoaded((prev) => ({ ...prev, [m.id]: true }))}
+                />
               </Marker>
             );
           })}
+
+          {/* Self marker — rendered last so it always appears on top of crew markers */}
+          {location && (
+            <Marker
+              coordinate={{ latitude: location.latitude, longitude: location.longitude }}
+              anchor={{ x: 0.5, y: 1 }}
+              tracksViewChanges
+            >
+              <CrewMarker
+                member={{ name: myProfile?.name || 'Me', color: getAvatarColor(uid), photoURL: myProfile?.photoURL ?? null }}
+                speed={currentSpeedMph}
+                isSelected
+                onImageLoad={() => setSelfImageLoaded(true)}
+              />
+            </Marker>
+          )}
         </MapView>
 
         {/* Tracking card */}
-        {trackingMember && selectedMember && (() => {
+        {followMode === 'member' && selectedMember && (() => {
           const m = crewMembers.find((c) => c.id === selectedMember);
           if (!m) return null;
           return (
@@ -1227,7 +1331,11 @@ export default function MapScreen({ navigation }) {
                 <Text style={styles.trackingSpeed}>{Math.round(m.speed || 0)} mph</Text>
               </View>
               <TouchableOpacity
-                onPress={() => { setTrackingMember(false); setSelectedMember(null); }}
+                onPress={() => {
+                  setSelectedMember(null);
+                  setFollowMode('self');
+                  lastSelfPosRef.current = null; // snap back to self immediately
+                }}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Text style={styles.trackingStop}>stop</Text>
