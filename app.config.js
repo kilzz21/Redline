@@ -32,6 +32,7 @@ export default {
         UIBackgroundModes: ['remote-notification', 'audio', 'voip'],
       },
       bundleIdentifier: 'com.kilzz21.redline',
+      buildNumber: '2',
     },
     android: {
       adaptiveIcon: {
