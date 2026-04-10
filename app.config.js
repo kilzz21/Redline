@@ -8,6 +8,12 @@ export default {
     icon: './assets/icon.png',
     userInterfaceStyle: 'dark',
     newArchEnabled: true,
+    runtimeVersion: {
+      policy: 'appVersion',
+    },
+    updates: {
+      url: 'https://u.expo.dev/e270e189-f79a-4bd9-b69d-1066aa145b4c',
+    },
     splash: {
       image: './assets/splash.png',
       resizeMode: 'contain',
