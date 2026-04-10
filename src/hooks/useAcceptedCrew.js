@@ -43,7 +43,9 @@ export function useAcceptedCrew() {
         chunks.push(allUids.slice(i, i + 30));
       }
 
+      // Shared map so all chunk listeners contribute to the same result set.
       const profileMap = {};
+      let resolvedChunks = 0;
 
       chunks.forEach((chunk) => {
         const q = query(
@@ -54,7 +56,12 @@ export function useAcceptedCrew() {
           snap.docs.forEach((d) => {
             profileMap[d.id] = { id: d.id, ...d.data() };
           });
-          setCrewProfiles(Object.values(profileMap));
+          resolvedChunks += 1;
+          // Only publish once all chunks have reported at least once,
+          // then keep updating on any subsequent change.
+          if (resolvedChunks >= chunks.length) {
+            setCrewProfiles(Object.values(profileMap));
+          }
         });
         profileUnsubsRef.current.push(unsub);
       });

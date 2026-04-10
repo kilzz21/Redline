@@ -18,10 +18,10 @@ import { GOOGLE_PLACES_KEY } from '../config/keys';
 import { useCrews } from '../hooks/useCrews';
 import { useMic } from '../context/MicContext';
 import { getDirections, getETAs } from '../utils/directions';
+import { ORANGE, darkMapStyle, toDate, getInitials, getAvatarColor } from '../utils/helpers';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const ORANGE = '#f97316';
 const SPEED_THRESHOLD_MPH = 5;
 const PRE_DRIVE_MS = 2 * 60 * 1000;
 const STOP_DELAY_MS = 30 * 1000;
@@ -29,33 +29,7 @@ const TRAIL_MAX_AGE_MS = 5 * 60 * 1000;
 const TRAIL_MAX_POINTS = 30;
 const ARRIVED_THRESHOLD_MILES = 0.124; // ~200 meters
 
-const darkMapStyle = [
-  { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
-  { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#57606f' }] },
-  { featureType: 'administrative.country', elementType: 'labels.text.fill', stylers: [{ color: '#9e9e9e' }] },
-  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#bdbdbd' }] },
-  { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
-  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
-  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
-  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#2c6675' }] },
-  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f4f5e' }] },
-  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#b0d5ce' }] },
-  { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
-  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#515c6d' }] },
-];
-
 // ─── Utilities ────────────────────────────────────────────────────────────────
-
-function toDate(ts) {
-  if (!ts) return null;
-  if (typeof ts.toDate === 'function') return ts.toDate();
-  if (ts instanceof Date) return ts;
-  return new Date(ts);
-}
 
 function haversineMiles(lat1, lng1, lat2, lng2) {
   const R = 3958.8;
@@ -67,17 +41,6 @@ function haversineMiles(lat1, lng1, lat2, lng2) {
       Math.cos((lat2 * Math.PI) / 180) *
       Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function getAvatarColor(uid) {
-  const colors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#f59e0b', '#ec4899'];
-  const index = uid?.charCodeAt(0) % colors.length || 0;
-  return colors[index];
-}
-
-function getInitials(name) {
-  if (!name) return '??';
-  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
 function toMph(ms) {
@@ -1174,18 +1137,20 @@ export default function MapScreen({ navigation }) {
   const recenter = () => {
     setSelectedMember(null);
     setFollowMode('self');
-    lastSelfPosRef.current = null; // force immediate pan on next location tick
     if (location) {
+      // Pre-set so the self-follow effect sees no movement delta and doesn't
+      // fire a competing center-only animation that would cancel our zoom.
+      lastSelfPosRef.current = { latitude: location.latitude, longitude: location.longitude };
       mapRef.current?.animateCamera(
-        { center: { latitude: location.latitude, longitude: location.longitude } },
+        { center: { latitude: location.latitude, longitude: location.longitude }, zoom: 16 },
         { duration: 500 }
       );
     }
   };
 
   const onMapPanDrag = () => {
-    // User touched and dragged — break out of any follow mode
-    if (followMode !== 'free') setFollowMode('free');
+    // Only break follow when tracking self — member tracking is locked until stop is pressed
+    if (followMode === 'self') setFollowMode('free');
   };
 
   const onMapRegionChange = (region) => {
@@ -1281,9 +1246,13 @@ export default function MapScreen({ navigation }) {
                 anchor={{ x: 0.5, y: 1 }}
                 tracksViewChanges={!markerImageLoaded[m.id] || isSelected}
                 onPress={() => {
-                  lastTrackedPosRef.current = null; // force immediate pan
+                  lastTrackedPosRef.current = null;
                   setSelectedMember(m.id);
                   setFollowMode('member');
+                  mapRef.current?.animateCamera(
+                    { center: { latitude: m.latitude, longitude: m.longitude }, zoom: 16 },
+                    { duration: 500 }
+                  );
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                 }}
               >

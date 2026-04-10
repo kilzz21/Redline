@@ -31,7 +31,6 @@ export async function registerForPushNotificationsAsync() {
   }
 
   if (finalStatus !== 'granted') {
-    console.log('[notifications] permission not granted');
     return null;
   }
 

@@ -9,17 +9,7 @@ import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
 import * as Haptics from 'expo-haptics';
 import { auth, db } from '../config/firebase';
 import { SkeletonList } from '../components/SkeletonCard';
-
-const ORANGE = '#f97316';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function toDate(ts) {
-  if (!ts) return null;
-  if (typeof ts.toDate === 'function') return ts.toDate();
-  if (ts instanceof Date) return ts;
-  return new Date(ts);
-}
+import { ORANGE, toDate } from '../utils/helpers';
 
 function relativeDay(ts) {
   const d = toDate(ts);

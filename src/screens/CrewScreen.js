@@ -17,8 +17,7 @@ import { useCrews } from '../hooks/useCrews';
 import { useAcceptedCrew } from '../hooks/useAcceptedCrew';
 import { requestJoinChannel } from '../utils/radioJoinRequest';
 import { SkeletonList } from '../components/SkeletonCard';
-
-const ORANGE = '#f97316';
+import { ORANGE, getAvatarColor, getInitials, formatCarString } from '../utils/helpers';
 
 // ─── Contacts cache (module-level, 5-min TTL) ─────────────────────────────────
 let _contactsCache = null;
@@ -62,30 +61,16 @@ async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, m
   const docId = crewInviteDocId(crewId, toUid);
   const ref = doc(db, 'crewInvites', docId);
 
-  console.log('[crewInvite] === SENDING INVITE ===');
-  console.log('[crewInvite] docId:', docId);
-  console.log('[crewInvite] collection path:', ref.path);
-  console.log('[crewInvite] crewId:', crewId);
-  console.log('[crewInvite] toUid:', toUid);
-  console.log('[crewInvite] fromUid (param):', fromUid);
-  console.log('[crewInvite] auth.currentUser?.uid:', auth.currentUser?.uid);
-  console.log('[crewInvite] fromUid matches auth?', fromUid === auth.currentUser?.uid);
-
   // Check for existing pending invite.
-  // NOTE: if the doc doesn't exist, getDoc still needs read permission —
-  // rules must allow resource == null (non-existent doc) reads.
   let snap;
   try {
     snap = await getDoc(ref);
-    console.log('[crewInvite] getDoc success — exists:', snap.exists());
-  } catch (readErr) {
-    console.log('[crewInvite] getDoc FAILED — code:', readErr.code, 'msg:', readErr.message);
+  } catch {
     // If we can't read (doc likely doesn't exist yet), proceed to write.
     snap = null;
   }
 
   if (snap?.exists() && snap.data().status === 'pending') {
-    console.log('[crewInvite] duplicate — pending invite already exists, skipping');
     return false;
   }
 
@@ -99,36 +84,17 @@ async function sendCrewInviteDoc({ crewId, crewName, fromUid, fromName, toUid, m
     status: 'pending',
     createdAt: serverTimestamp(),
   };
-  console.log('[crewInvite] writing payload:', JSON.stringify({ ...payload, createdAt: '<serverTimestamp>' }));
 
   try {
     await setDoc(ref, payload);
-    console.log('[crewInvite] setDoc success ✓');
     pushNotify(toUid, 'crew invite', `${fromName} invited you to join ${crewName}`, { type: 'crewInvite', crewId });
     return true;
   } catch (writeErr) {
-    console.log('[crewInvite] setDoc FAILED — code:', writeErr.code, 'msg:', writeErr.message);
     throw writeErr;
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function getAvatarColor(uid) {
-  const colors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#f59e0b', '#ec4899'];
-  const index = uid?.charCodeAt(0) % colors.length || 0;
-  return colors[index];
-}
-
-function getInitials(name) {
-  if (!name) return '??';
-  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
-}
-
-function formatCarString(car) {
-  if (!car) return null;
-  return [car.year, car.make, car.model].filter(Boolean).join(' ') || null;
-}
 
 function isOnline(profile) {
   const last = profile?.lastSeen?.toMillis?.() ?? 0;
@@ -267,7 +233,7 @@ function CrewCard({ crew, uid, onPress, onLongPress, onOpenRadio, index }) {
 
 // ─── Create Crew Modal ────────────────────────────────────────────────────────
 
-function CreateCrewModal({ visible, connections, uid, myProfile, sentCrewInviteUids, onClose, onCreated }) {
+function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCreated }) {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState('');
   const [selected, setSelected] = useState(new Set());
@@ -293,9 +259,7 @@ function CreateCrewModal({ visible, connections, uid, myProfile, sentCrewInviteU
         createdAt: serverTimestamp(),
       });
       const fromName = myProfile?.name || auth.currentUser?.email || 'Unknown';
-      // Only invite members that don't already have a pending invite
-      const eligible = [...selected].filter((toUid) => !sentCrewInviteUids?.has(toUid));
-      await Promise.all(eligible.map((toUid) =>
+      await Promise.all([...selected].map((toUid) =>
         sendCrewInviteDoc({
           crewId: ref.id,
           crewName,
@@ -305,7 +269,7 @@ function CreateCrewModal({ visible, connections, uid, myProfile, sentCrewInviteU
           memberCount: selected.size + 1,
         })
       ));
-      onCreated(ref.id, eligible.length);
+      onCreated(ref.id, selected.size);
       setName('');
       setSelected(new Set());
       onClose();
@@ -358,32 +322,15 @@ function CreateCrewModal({ visible, connections, uid, myProfile, sentCrewInviteU
           {connections.length > 0 && (
             <>
               <Text style={styles.modalSectionLabel}>add members</Text>
-              {connections.map((c) => {
-                const alreadyInvited = sentCrewInviteUids?.has(c.id);
-                if (alreadyInvited) {
-                  return (
-                    <View key={c.id} style={styles.checkRow}>
-                      <View style={[styles.checkBox, { opacity: 0.3 }]} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.checkLabel, { opacity: 0.4 }]}>{c.name || c.email || 'Unknown'}</Text>
-                        {(formatCarString(c.car) || c.location)
-                          ? <Text style={styles.checkSubLabel}>{formatCarString(c.car) || c.location}</Text>
-                          : null}
-                      </View>
-                      <Text style={styles.alreadyInvitedLabel}>already invited</Text>
-                    </View>
-                  );
-                }
-                return (
-                  <Checkbox
-                    key={c.id}
-                    checked={selected.has(c.id)}
-                    label={c.name || c.email || 'Unknown'}
-                    subLabel={formatCarString(c.car) || c.location}
-                    onToggle={() => toggle(c.id)}
-                  />
-                );
-              })}
+              {connections.map((c) => (
+                <Checkbox
+                  key={c.id}
+                  checked={selected.has(c.id)}
+                  label={c.name || c.email || 'Unknown'}
+                  subLabel={formatCarString(c.car) || c.location}
+                  onToggle={() => toggle(c.id)}
+                />
+              ))}
             </>
           )}
 
@@ -639,8 +586,6 @@ function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, 
     }
     setSending(crew.id);
     try {
-      console.log('[crewInvite] crew.members:', JSON.stringify(crew.members));
-      console.log('[crewInvite] uid in crew.members?', crew.members?.includes(uid));
       const sent = await sendCrewInviteDoc({
         crewId: crew.id,
         crewName: crew.name,
@@ -657,7 +602,6 @@ function AddToCrewModal({ visible, onClose, contactUser, crews, uid, myProfile, 
       onInviteSent?.(crew.name);
       onClose();
     } catch (e) {
-      console.log('[crewInvite] handleSend error — code:', e.code, 'msg:', e.message);
       Alert.alert('Failed to invite', e.message);
     } finally {
       setSending(null);
@@ -1565,7 +1509,6 @@ export default function CrewScreen({ navigation, route }) {
         connections={connections}
         uid={uid}
         myProfile={myProfile}
-        sentCrewInviteUids={sentCrewInviteUids}
         onClose={() => setShowCreateModal(false)}
         onCreated={(_, inviteCount) => {
           if (inviteCount > 0) {

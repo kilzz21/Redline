@@ -9,9 +9,9 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#111111"
+      "backgroundColor": "#000000"
     },
     "ios": {
       "icon": "./assets/icon.png",
@@ -23,7 +23,7 @@
         "NSMicrophoneUsageDescription": "Redline needs microphone access for crew radio",
         "NSPhotoLibraryUsageDescription": "Redline needs photo library access to set your profile picture",
         "NSContactsUsageDescription": "Redline uses your contacts to find friends already on the app",
-        "UIBackgroundModes": ["remote-notification"]
+        "UIBackgroundModes": ["remote-notification", "audio", "voip"]
       },
       "bundleIdentifier": "com.anonymous.redline"
     },
@@ -31,9 +31,7 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true,
-      "googleServicesFile": "./google-services.json"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"

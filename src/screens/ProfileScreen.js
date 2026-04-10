@@ -13,29 +13,7 @@ import { uploadProfilePicture } from '../utils/uploadProfilePicture';
 import SettingsScreen from './SettingsScreen';
 import { useCrews } from '../hooks/useCrews';
 import { BADGES, BADGE_CATEGORIES } from '../config/badges';
-
-const ORANGE = '#f97316';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function toDate(ts) {
-  if (!ts) return null;
-  if (typeof ts.toDate === 'function') return ts.toDate();
-  if (ts instanceof Date) return ts;
-  return new Date(ts);
-}
-
-function getInitials(name) {
-  if (!name) return '??';
-  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
-}
-
-function formatCarString(car) {
-  if (!car) return '';
-  const { year, make, model, color } = car;
-  const base = [year, make, model].filter(Boolean).join(' ');
-  return color ? `${base} · ${color}` : base;
-}
+import { ORANGE, toDate, getInitials, formatCarString } from '../utils/helpers';
 
 function weekBounds(offsetWeeks = 0) {
   const now = new Date();
@@ -185,7 +163,8 @@ function EditModal({ visible, profile, onClose }) {
       setColor(profile?.car?.color ?? '');
       setNewPicUri(null);
     }
-  }, [visible, profile]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
 
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();

@@ -22,21 +22,9 @@ import { AGORA_APP_ID } from '../config/agora';
 import { useMic } from '../context/MicContext';
 import { useCrews } from '../hooks/useCrews';
 import { consumeJoinRequest } from '../utils/radioJoinRequest';
-
-const ORANGE = '#f97316';
+import { ORANGE, getInitials, getAvatarColor } from '../utils/helpers';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function getInitials(name) {
-  if (!name) return '??';
-  return name.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2);
-}
-
-function getAvatarColor(uid) {
-  const colors = ['#f97316', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#f59e0b', '#ec4899'];
-  const index = uid?.charCodeAt(0) % colors.length || 0;
-  return colors[index];
-}
 
 function isOnline(profile) {
   const last = profile?.lastSeen?.toMillis?.() ?? 0;
@@ -157,9 +145,13 @@ export default function RadioScreen() {
     engine.muteLocalAudioStream(true);
     engine.enableAudioVolumeIndication(500, 3, false);
 
+    // Route audio to speaker so remote voices come through at full volume on all devices.
+    // Without this, iOS defaults to earpiece on iPad/iPhone which is very quiet.
+    engine.setDefaultAudioRouteToSpeakerphone(true);
+    engine.setEnableSpeakerphone(true);
+
     const eventHandler = {
       onJoinChannelSuccess: (connection, elapsed) => {
-        console.log('[Agora] Joined', connection.channelId, 'uid', connection.localUid);
         setLocalUid(connection.localUid);
       },
       onUserJoined: (connection, remoteUid) => {
@@ -187,7 +179,6 @@ export default function RadioScreen() {
         try {
           const newToken = await fetchToken(ch);
           engineRef.current?.renewToken(newToken);
-          console.log('[Agora] Token renewed for', ch);
         } catch (e) {
           console.warn('[Agora] Token renewal failed:', e.message);
         }
@@ -219,11 +210,9 @@ export default function RadioScreen() {
 
   const fetchToken = async (channelName) => {
     const user = await waitForAuth();
-    console.log('[Agora] auth.currentUser before fetchToken:', user.uid);
     await user.getIdToken();
     const getAgoraToken = httpsCallable(functions, 'getAgoraToken');
     const result = await getAgoraToken({ channelName, uid: 0 });
-    console.log('[Agora] Token fetched for', channelName, ':', result.data.token.slice(0, 20) + '…');
     return result.data.token;
   };
 
@@ -247,6 +236,18 @@ export default function RadioScreen() {
       Alert.alert('Microphone access needed', 'Enable microphone in Settings to use crew radio.');
       return;
     }
+
+    // Configure audio session: stays active in background, uses communication mode
+    // (echo cancellation, noise suppression), and routes to speaker.
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: true,
+      interruptionModeIOS: 1, // DO_NOT_MIX
+      shouldDuckAndroid: false,
+      interruptionModeAndroid: 1,
+      playThroughEarpieceAndroid: false,
+    });
 
     setTokenLoading(true);
     try {
@@ -284,7 +285,6 @@ export default function RadioScreen() {
         try {
           const newToken = await fetchToken(channelId);
           engineRef.current?.renewToken(newToken);
-          console.log('[Agora] Token auto-refreshed at 55m for', channelId);
         } catch (e) {
           console.warn('[Agora] Auto-refresh failed:', e.message);
         }
@@ -318,6 +318,14 @@ export default function RadioScreen() {
     setIsMicOn(false);
     setTalking(false);
     setMicOn(false);
+    // Reset audio session back to normal playback mode
+    Audio.setAudioModeAsync({
+      allowsRecordingIOS: false,
+      playsInSilentModeIOS: false,
+      staysActiveInBackground: false,
+      interruptionModeIOS: 0,
+      shouldDuckAndroid: true,
+    }).catch(() => {});
   };
 
   // ── Auto-join from CrewScreen ─────────────────────────────────────────────
