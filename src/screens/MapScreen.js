@@ -230,16 +230,22 @@ const getPlaceDetails = async (placeId) => {
   };
 };
 
+// Returns lightweight prediction objects instantly — coordinates fetched only on tap.
 const getAutocompleteSuggestions = async (input, lat, lon) => {
+  const hasLocation = lat != null && lon != null;
   const body = {
     input,
     languageCode: 'en',
-    ...(lat != null && lon != null ? {
+    includeQueryPredictions: false,
+    ...(hasLocation ? {
+      origin: { latitude: lat, longitude: lon },
       locationBias: {
-        circle: { center: { latitude: lat, longitude: lon }, radius: 50000.0 },
+        circle: { center: { latitude: lat, longitude: lon }, radius: 30000.0 },
       },
+      rankPreference: 'DISTANCE',
     } : {}),
   };
+
   const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
     headers: {
@@ -250,28 +256,28 @@ const getAutocompleteSuggestions = async (input, lat, lon) => {
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  console.log('[New Places API] response:', JSON.stringify(data).slice(0, 400));
   if (!data.suggestions) return [];
 
-  const placeIds = data.suggestions
+  // Map predictions to display objects — no extra detail fetches here
+  return data.suggestions
     .filter((s) => s.placePrediction)
-    .map((s) => s.placePrediction.placeId);
-
-  // Fetch details for all predictions in parallel
-  const details = await Promise.all(placeIds.map((id) => getPlaceDetails(id).catch(() => null)));
-  const withDistance = details
-    .filter((d) => d !== null)
-    .map((d) => ({
-      ...d,
-      distanceMi: (lat != null && lon != null)
-        ? haversineMiles(lat, lon, d.latitude, d.longitude)
-        : null,
-    }));
-
-  if (lat != null && lon != null) {
-    withDistance.sort((a, b) => (a.distanceMi ?? Infinity) - (b.distanceMi ?? Infinity));
-  }
-  return withDistance;
+    .map((s) => {
+      const p = s.placePrediction;
+      const distM = p.distanceMeters ?? null;
+      let distLabel = null;
+      if (distM != null) {
+        distLabel = distM < 1609
+          ? `${Math.round(distM * 3.281)}ft`
+          : `${(distM / 1609.34).toFixed(1)}mi`;
+      }
+      return {
+        placeId: p.placeId,
+        name: p.structuredFormat?.mainText?.text || p.text?.text || '',
+        fullAddress: p.structuredFormat?.secondaryText?.text || '',
+        distLabel,
+        distanceMeters: distM,
+      };
+    });
 };
 
 function SetMeetupModal({ visible, onClose, onSet, mapCenterRef, userLocation }) {
@@ -293,26 +299,35 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef, userLocation })
     setError('');
     clearTimeout(debounceRef.current);
     if (!text.trim() || text.trim().length < 2) { setSuggestions([]); return; }
-    if (gpsLocating) return; // wait for GPS fix before searching
+    if (gpsLocating) return;
     debounceRef.current = setTimeout(async () => {
-      console.log('[Search] gpsLocation before search:', gpsLocation);
-      setFetchingDetail(true);
       try {
         const hits = await getAutocompleteSuggestions(text, gpsLocation?.latitude, gpsLocation?.longitude);
         setSuggestions(hits);
-        if (!hits.length) setError('no results found');
+        if (!hits.length) setError('no results near you');
       } catch {
         setError('search failed — check your connection');
-      } finally {
-        setFetchingDetail(false);
       }
-    }, 200);
+    }, 150);
   };
 
-  const pickSuggestion = (s) => {
+  // Fetch coordinates only when user taps a result — keeps the suggestion list instant
+  const pickSuggestion = async (s) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSuggestions([]);
-    setSelected(s);
+    setFetchingDetail(true);
+    try {
+      const detail = await getPlaceDetails(s.placeId);
+      if (detail) {
+        setSelected(detail);
+      } else {
+        setError('could not load place details');
+      }
+    } catch {
+      setError('failed to load place');
+    } finally {
+      setFetchingDetail(false);
+    }
   };
 
   const dropPin = () => {
@@ -433,12 +448,8 @@ function SetMeetupModal({ visible, onClose, onSet, mapCenterRef, userLocation })
                     <Text style={[styles.resultName, { fontWeight: '500' }]} numberOfLines={1}>{s.name}</Text>
                     {s.fullAddress ? <Text style={styles.resultAddr} numberOfLines={1}>{s.fullAddress}</Text> : null}
                   </View>
-                  {s.distanceMi != null && (
-                    <Text style={styles.resultDist}>
-                      {s.distanceMi < 0.1
-                        ? `${Math.round(s.distanceMi * 5280)} ft`
-                        : `${s.distanceMi.toFixed(1)} mi`}
-                    </Text>
+                  {s.distLabel != null && (
+                    <Text style={styles.resultDist}>{s.distLabel}</Text>
                   )}
                 </TouchableOpacity>
               ))}
@@ -807,18 +818,21 @@ export default function MapScreen({ navigation }) {
         return;
       }
 
-      const initial = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const initial = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.BestForNavigation,
+        maximumAge: 0,
+      });
       setLocation(initial.coords);
       setLocating(false);
       locationRef.current = initial.coords;
       pushLocation(initial.coords);
 
-      // 2s updates when driving, 5m distance threshold — fires frequently when moving
+      // Fire on every GPS update the OS generates — BestForNavigation delivers ~1Hz on device
       watchRef.current = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
-          timeInterval: 2000,
-          distanceInterval: 5,
+          timeInterval: 1000,
+          distanceInterval: 2,
         },
         (loc) => {
           setLocation(loc.coords);
@@ -1113,7 +1127,7 @@ export default function MapScreen({ navigation }) {
             <Marker
               coordinate={{ latitude: location.latitude, longitude: location.longitude }}
               anchor={{ x: 0.5, y: 1 }}
-              tracksViewChanges={false}
+              tracksViewChanges
             >
               <CrewMarker
                 member={{ name: myProfile?.name || 'Me', color: getAvatarColor(uid) }}
