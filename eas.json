@@ -15,7 +15,9 @@
   "submit": {
     "production": {
       "ios": {
-        "appleId": "youssefelamine@outlook.com"
+        "appleId": "youssefelamine@outlook.com",
+        "ascAppId": "6762022215",
+        "appleTeamId": "UKV374466J"
       }
     }
   }
