@@ -25,7 +25,7 @@ export default {
         NSContactsUsageDescription: 'Redline uses your contacts to find friends already on the app',
         UIBackgroundModes: ['remote-notification', 'audio', 'voip'],
       },
-      bundleIdentifier: 'com.anonymous.redline',
+      bundleIdentifier: 'com.kilzz21.redline',
     },
     android: {
       adaptiveIcon: {
