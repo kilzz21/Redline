@@ -5,6 +5,9 @@ import { getStorage } from 'firebase/storage';
 import { getFunctions } from 'firebase/functions';
 import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
 
+// Firebase client config is intentionally public — it's a project identifier,
+// not a secret. Security is enforced by Firestore Security Rules, not by
+// keeping these values hidden. See: firebase.google.com/docs/projects/api-keys
 const firebaseConfig = {
   apiKey: "AIzaSyCL-42Fsg_bBb_RoxdD6naloclt25vW9V0",
   authDomain: "redline-191fa.firebaseapp.com",

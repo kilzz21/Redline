@@ -1,2 +1,3 @@
-export const AGORA_APP_ID = '16fcf0f9c28c48c2a2ab334f1734919d';
-// Tokens are now generated server-side via the getAgoraToken Cloud Function.
+// App ID is a public channel identifier — safe to ship in the bundle.
+// The App Certificate never leaves the server (Cloud Function: getAgoraToken).
+export { AGORA_APP_ID } from './env';
