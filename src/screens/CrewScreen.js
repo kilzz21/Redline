@@ -500,7 +500,7 @@ function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap,
                   <TouchableOpacity
                     key={p.id}
                     style={styles.memberRow}
-                    onPress={() => navigation.navigate('FriendProfile', { uid: p.id })}
+                    onPress={() => { onClose(); setTimeout(() => navigation.navigate('FriendProfile', { uid: p.id }), 300); }}
                     activeOpacity={0.7}
                   >
                     <Avatar photoURL={p.photoURL} name={p.name} uid={p.id} size={40} />
