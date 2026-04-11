@@ -52,6 +52,7 @@ export default {
           sounds: [],
         },
       ],
+      'expo-updates',
     ],
     extra: {
       eas: {
