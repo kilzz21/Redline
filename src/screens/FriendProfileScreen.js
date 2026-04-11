@@ -123,25 +123,18 @@ export default function FriendProfileScreen({ route, navigation }) {
     const alreadyConnected = connections.some((c) => c.id === friendUid);
     if (alreadyConnected) { setConnectionStatus('connected'); return; }
 
-    // Check for pending invites in either direction
+    // Check invites collection directly for both accepted and pending states
     async function checkPending() {
       try {
-        const [sentSnap, receivedSnap] = await Promise.all([
-          getDocs(query(
-            collection(db, 'invites'),
-            where('fromUid', '==', myUid),
-            where('toUid', '==', friendUid),
-            where('status', '==', 'pending')
-          )),
-          getDocs(query(
-            collection(db, 'invites'),
-            where('fromUid', '==', friendUid),
-            where('toUid', '==', myUid),
-            where('status', '==', 'pending')
-          )),
+        const [sentPending, receivedPending, sentAccepted, receivedAccepted] = await Promise.all([
+          getDocs(query(collection(db, 'invites'), where('fromUid', '==', myUid), where('toUid', '==', friendUid), where('status', '==', 'pending'))),
+          getDocs(query(collection(db, 'invites'), where('fromUid', '==', friendUid), where('toUid', '==', myUid), where('status', '==', 'pending'))),
+          getDocs(query(collection(db, 'invites'), where('fromUid', '==', myUid), where('toUid', '==', friendUid), where('status', '==', 'accepted'))),
+          getDocs(query(collection(db, 'invites'), where('fromUid', '==', friendUid), where('toUid', '==', myUid), where('status', '==', 'accepted'))),
         ]);
-        if (!sentSnap.empty) setConnectionStatus('pending_sent');
-        else if (!receivedSnap.empty) setConnectionStatus('pending_received');
+        if (!sentAccepted.empty || !receivedAccepted.empty) setConnectionStatus('connected');
+        else if (!sentPending.empty) setConnectionStatus('pending_sent');
+        else if (!receivedPending.empty) setConnectionStatus('pending_received');
         else setConnectionStatus('none');
       } catch {
         setConnectionStatus('none');
