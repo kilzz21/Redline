@@ -81,8 +81,16 @@ function BadgeModal({ badge, earned, onClose }) {
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function FriendProfileScreen({ route, navigation }) {
-  const { uid: friendUid } = route.params;
+  const { uid: friendUid } = route.params ?? {};
   const myUid = auth.currentUser?.uid;
+
+  if (!friendUid) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#111', alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ color: '#888' }}>user not found</Text>
+      </View>
+    );
+  }
   const insets = useSafeAreaInsets();
 
   const [profile, setProfile] = useState(null);

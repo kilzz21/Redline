@@ -347,7 +347,7 @@ function CreateCrewModal({ visible, connections, uid, myProfile, onClose, onCrea
 
 // ─── Crew Detail Modal ────────────────────────────────────────────────────────
 
-function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap, visible, onClose, onInvitesSent }) {
+function CrewDetailModal({ crew, uid, myProfile, connections, sentCrewInviteMap, visible, onClose, onInvitesSent, navigation }) {
   const insets = useSafeAreaInsets();
   const [addingMembers, setAddingMembers] = useState(false);
   const [selectedToAdd, setSelectedToAdd] = useState(new Set());
@@ -1526,6 +1526,7 @@ export default function CrewScreen({ navigation, route }) {
         connections={connections}
         sentCrewInviteMap={sentCrewInviteMap}
         visible={showDetail}
+        navigation={navigation}
         onClose={() => setShowDetail(false)}
         onInvitesSent={(count) => {
           if (count > 0) showToast(`invite${count > 1 ? 's' : ''} sent to ${count} member${count > 1 ? 's' : ''}`);
