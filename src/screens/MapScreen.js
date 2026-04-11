@@ -1508,7 +1508,19 @@ export default function MapScreen({ navigation }) {
           }
 
           return (
-            <View key={m.id} style={styles.crewRow}>
+            <TouchableOpacity
+              key={m.id}
+              style={styles.crewRow}
+              activeOpacity={0.7}
+              onPress={() => {
+                setSelectedMember(m.id);
+                setFollowMode('member');
+                mapRef.current?.animateCamera(
+                  { center: { latitude: m.latitude, longitude: m.longitude }, zoom: 15 },
+                  { duration: 600 }
+                );
+              }}
+            >
               {/* Position badge in caravan mode */}
               {destination && (
                 <View style={styles.positionBadge}>
@@ -1546,7 +1558,7 @@ export default function MapScreen({ navigation }) {
               </View>
 
               <Text style={styles.crewDistance} numberOfLines={1}>{distLabel}</Text>
-            </View>
+            </TouchableOpacity>
           );
         })}
 
