@@ -5,12 +5,22 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, collection, onSnapshot, updateDoc, arrayRemove } from 'firebase/firestore';
+import {
+  doc, collection, onSnapshot, updateDoc, arrayRemove,
+  addDoc, query, where, getDocs, serverTimestamp,
+} from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import * as Haptics from 'expo-haptics';
-import { auth, db } from '../config/firebase';
+import { auth, db, functions } from '../config/firebase';
 import { useCrews } from '../hooks/useCrews';
+import { useAcceptedCrew } from '../hooks/useAcceptedCrew';
 import { BADGES, BADGE_CATEGORIES } from '../config/badges';
 import { ORANGE, toDate, getInitials, formatCarString } from '../utils/helpers';
+
+function pushNotify(toUid, title, body, data = {}) {
+  httpsCallable(functions, 'sendPushNotification')({ toUid, title, body, data })
+    .catch((e) => console.warn('[push]', e.message));
+}
 
 function computeStats(drives) {
   if (!drives.length) return { topSpeed: 0, totalMiles: 0, totalDrives: 0, timeLabel: '0h' };
@@ -35,9 +45,7 @@ function computeBadgeStats(drives, profile) {
     hasEarlyDrive: drives.some((d) => { const h = toDate(d.startTime)?.getHours(); return h !== undefined && h < 6; }),
     weekendDrives: drives.filter((d) => { const day = toDate(d.startTime)?.getDay(); return day === 0 || day === 6; }).length,
     hasCanyonDrive: drives.some((d) => (d.turnCount ?? 0) >= 20),
-    crewCount: 0,
-    createdCrew: false,
-    totalCrewMembers: 0,
+    crewCount: 0, createdCrew: false, totalCrewMembers: 0,
     userNumber: profile?.userNumber ?? 9999,
   };
 }
@@ -91,6 +99,7 @@ export default function FriendProfileScreen({ route, navigation }) {
       </View>
     );
   }
+
   const insets = useSafeAreaInsets();
 
   const [profile, setProfile] = useState(null);
@@ -98,7 +107,48 @@ export default function FriendProfileScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [selectedBadge, setSelectedBadge] = useState(null);
   const [selectedBadgeEarned, setSelectedBadgeEarned] = useState(false);
+
+  // Connection state: 'unknown' | 'connected' | 'pending_sent' | 'pending_received' | 'none'
+  const [connectionStatus, setConnectionStatus] = useState('unknown');
+  const [connectLoading, setConnectLoading] = useState(false);
+
   const crews = useCrews();
+  const connections = useAcceptedCrew();
+
+  // Check connection status on mount
+  useEffect(() => {
+    if (!myUid || !friendUid) return;
+
+    // Already connected?
+    const alreadyConnected = connections.some((c) => c.id === friendUid);
+    if (alreadyConnected) { setConnectionStatus('connected'); return; }
+
+    // Check for pending invites in either direction
+    async function checkPending() {
+      try {
+        const [sentSnap, receivedSnap] = await Promise.all([
+          getDocs(query(
+            collection(db, 'invites'),
+            where('fromUid', '==', myUid),
+            where('toUid', '==', friendUid),
+            where('status', '==', 'pending')
+          )),
+          getDocs(query(
+            collection(db, 'invites'),
+            where('fromUid', '==', friendUid),
+            where('toUid', '==', myUid),
+            where('status', '==', 'pending')
+          )),
+        ]);
+        if (!sentSnap.empty) setConnectionStatus('pending_sent');
+        else if (!receivedSnap.empty) setConnectionStatus('pending_received');
+        else setConnectionStatus('none');
+      } catch {
+        setConnectionStatus('none');
+      }
+    }
+    checkPending();
+  }, [myUid, friendUid, connections]);
 
   useEffect(() => {
     let profileLoaded = false;
@@ -120,14 +170,34 @@ export default function FriendProfileScreen({ route, navigation }) {
     return () => { unsubProfile(); unsubDrives(); };
   }, [friendUid]);
 
-  // Find shared crews to enable "remove" button
   const sharedCrews = crews.filter((c) => c.members?.includes(friendUid));
+  const isCrewMate = sharedCrews.length > 0;
   const statsPublic = profile?.statsPublic !== false;
 
   const badgeStats = computeBadgeStats(drives, profile);
-  const earnedBadgeIds = new Set(
-    BADGES.filter((b) => b.condition(badgeStats)).map((b) => b.id)
-  );
+  const earnedBadgeIds = new Set(BADGES.filter((b) => b.condition(badgeStats)).map((b) => b.id));
+
+  const handleConnect = async () => {
+    if (!myUid || connectLoading) return;
+    setConnectLoading(true);
+    try {
+      const fromName = auth.currentUser?.displayName || profile?.name || 'Someone';
+      await addDoc(collection(db, 'invites'), {
+        fromUid: myUid,
+        fromName,
+        toUid: friendUid,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+      });
+      pushNotify(friendUid, 'connection request', `${fromName} wants to connect on Redline`, { type: 'connectionRequest' });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setConnectionStatus('pending_sent');
+    } catch (e) {
+      Alert.alert('Failed to send request', e.message);
+    } finally {
+      setConnectLoading(false);
+    }
+  };
 
   const handleRemoveFromCrew = (crew) => {
     Alert.alert(
@@ -140,9 +210,7 @@ export default function FriendProfileScreen({ route, navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await updateDoc(doc(db, 'crews', crew.id), {
-                members: arrayRemove(friendUid),
-              });
+              await updateDoc(doc(db, 'crews', crew.id), { members: arrayRemove(friendUid) });
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             } catch (e) {
               Alert.alert('Failed', e.message);
@@ -187,6 +255,10 @@ export default function FriendProfileScreen({ route, navigation }) {
     { value: stats.timeLabel, label: 'behind the wheel' },
   ];
 
+  // Show connect button only for crew mates who aren't yet connected, not yourself
+  const showConnectButton = isCrewMate && friendUid !== myUid &&
+    (connectionStatus === 'none' || connectionStatus === 'pending_sent' || connectionStatus === 'pending_received');
+
   return (
     <>
       <ScrollView
@@ -207,6 +279,39 @@ export default function FriendProfileScreen({ route, navigation }) {
           {profile.username ? <Text style={styles.username}>@{profile.username}</Text> : null}
           {carStr ? <Text style={styles.car}>{carStr}</Text> : null}
           {profile.location ? <Text style={styles.locationText}>{profile.location}</Text> : null}
+
+          {/* Connect button */}
+          {showConnectButton && (
+            <TouchableOpacity
+              style={[
+                styles.connectBtn,
+                connectionStatus === 'pending_sent' && styles.connectBtnSent,
+                connectionStatus === 'pending_received' && styles.connectBtnReceived,
+              ]}
+              onPress={connectionStatus === 'none' ? handleConnect : undefined}
+              activeOpacity={connectionStatus === 'none' ? 0.7 : 1}
+              disabled={connectLoading || connectionStatus !== 'none'}
+            >
+              {connectLoading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : connectionStatus === 'pending_sent' ? (
+                <>
+                  <Ionicons name="time-outline" size={14} color="#888" />
+                  <Text style={styles.connectBtnTextSent}>request sent</Text>
+                </>
+              ) : connectionStatus === 'pending_received' ? (
+                <>
+                  <Ionicons name="person-add-outline" size={14} color={ORANGE} />
+                  <Text style={styles.connectBtnTextOrange}>they sent you a request</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="person-add-outline" size={14} color="#fff" />
+                  <Text style={styles.connectBtnText}>connect</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Stats */}
@@ -276,7 +381,7 @@ export default function FriendProfileScreen({ route, navigation }) {
           })}
         </View>
 
-        {/* Remove from crew buttons */}
+        {/* Remove from crew */}
         {sharedCrews.length > 0 && friendUid !== myUid && (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>shared crews</Text>
@@ -324,6 +429,17 @@ const styles = StyleSheet.create({
   car: { color: '#555', fontSize: 11, marginTop: 4 },
   locationText: { color: '#444', fontSize: 11, marginTop: 3 },
 
+  connectBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: 14, paddingHorizontal: 18, paddingVertical: 9,
+    backgroundColor: ORANGE, borderRadius: 20,
+  },
+  connectBtnSent: { backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2a2a2a' },
+  connectBtnReceived: { backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: ORANGE + '55' },
+  connectBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  connectBtnTextSent: { color: '#555', fontSize: 13, fontWeight: '500' },
+  connectBtnTextOrange: { color: ORANGE, fontSize: 13, fontWeight: '500' },
+
   statsGrid: { padding: 16, gap: 8 },
   statsRow: { flexDirection: 'row', gap: 8 },
   statCard: {
@@ -333,10 +449,7 @@ const styles = StyleSheet.create({
   statValue: { color: ORANGE, fontSize: 24, fontWeight: '500' },
   statLabel: { color: '#555', fontSize: 9, marginTop: 2 },
 
-  privateNotice: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 20, paddingVertical: 16,
-  },
+  privateNotice: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 20, paddingVertical: 16 },
   privateText: { color: '#555', fontSize: 12 },
 
   section: { paddingHorizontal: 16, paddingBottom: 16 },
@@ -347,11 +460,7 @@ const styles = StyleSheet.create({
   categoryBlock: { marginBottom: 16 },
   categoryLabel: { color: '#333', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 },
   badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-
-  badgeTile: {
-    width: 70, alignItems: 'center', borderRadius: 10,
-    borderWidth: 1, padding: 8, paddingBottom: 6,
-  },
+  badgeTile: { width: 70, alignItems: 'center', borderRadius: 10, borderWidth: 1, padding: 8, paddingBottom: 6 },
   badgeTileEarned: { backgroundColor: '#1a1a1a', borderColor: ORANGE },
   badgeTileUnearned: { backgroundColor: '#141414', borderColor: '#222' },
   badgeIcon: { fontSize: 22, marginBottom: 4 },
@@ -364,19 +473,13 @@ const styles = StyleSheet.create({
   removeBtn: {
     backgroundColor: '#1a1a1a', borderRadius: 10,
     borderWidth: 0.5, borderColor: '#ef444433',
-    paddingVertical: 12, paddingHorizontal: 14, marginBottom: 8,
-    alignItems: 'center',
+    paddingVertical: 12, paddingHorizontal: 14, marginBottom: 8, alignItems: 'center',
   },
   removeBtnText: { color: '#ef4444', fontSize: 14, fontWeight: '500' },
 
-  // Badge modal
-  badgeModalOverlay: {
-    flex: 1, backgroundColor: '#000000cc',
-    alignItems: 'center', justifyContent: 'center',
-  },
+  badgeModalOverlay: { flex: 1, backgroundColor: '#000000cc', alignItems: 'center', justifyContent: 'center' },
   badgeModalBox: {
-    backgroundColor: '#1a1a1a', borderRadius: 20,
-    borderWidth: 1, borderColor: '#2a2a2a',
+    backgroundColor: '#1a1a1a', borderRadius: 20, borderWidth: 1, borderColor: '#2a2a2a',
     padding: 28, alignItems: 'center', width: 260,
   },
   badgeModalIcon: { fontSize: 48, marginBottom: 12 },
