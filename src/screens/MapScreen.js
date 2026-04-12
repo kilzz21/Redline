@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { PROVIDER_GOOGLE, Marker, Polyline } from 'react-native-maps';
 import * as Location from 'expo-location';
+import { LOCATION_TASK } from '../tasks/locationTask';
 import * as Haptics from 'expo-haptics';
 import {
   doc, setDoc, addDoc, collection, serverTimestamp, onSnapshot, updateDoc, deleteField, increment,
@@ -862,8 +863,8 @@ export default function MapScreen({ navigation }) {
     }
 
     async function start() {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
+      const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+      if (fgStatus !== 'granted') {
         setPermDenied(true);
         setLocating(false);
         Alert.alert(
@@ -875,6 +876,25 @@ export default function MapScreen({ navigation }) {
           ]
         );
         return;
+      }
+
+      // Request background permission so location updates continue when app is backgrounded
+      const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+      if (bgStatus === 'granted') {
+        const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK).catch(() => false);
+        if (!isRunning) {
+          await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 5000,
+            distanceInterval: 10,
+            showsBackgroundLocationIndicator: true,
+            foregroundService: {
+              notificationTitle: 'Redline',
+              notificationBody: 'Sharing your location with your crew',
+              notificationColor: '#f97316',
+            },
+          });
+        }
       }
 
       const initial = await Location.getCurrentPositionAsync({

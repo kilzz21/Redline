@@ -26,10 +26,12 @@ export default {
         googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY,
       },
       infoPlist: {
+        NSLocationAlwaysAndWhenInUseUsageDescription: 'Redline shares your location with your crew while driving, even when the app is in the background.',
+        NSLocationAlwaysUsageDescription: 'Redline shares your location with your crew while driving, even when the app is in the background.',
         NSMicrophoneUsageDescription: 'Redline needs microphone access for crew radio',
         NSPhotoLibraryUsageDescription: 'Redline needs photo library access to set your profile picture',
         NSContactsUsageDescription: 'Redline uses your contacts to find friends already on the app',
-        UIBackgroundModes: ['remote-notification', 'audio', 'voip'],
+        UIBackgroundModes: ['remote-notification', 'audio', 'voip', 'location'],
       },
       bundleIdentifier: 'com.kilzz21.redline',
       buildNumber: '2',

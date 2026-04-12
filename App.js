@@ -7,6 +7,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import * as Notifications from 'expo-notifications';
 
 import { auth } from './src/config/firebase';
+import './src/tasks/locationTask'; // register background location task
 import { MicProvider } from './src/context/MicContext';
 import MicBar from './src/components/MicBar';
 import OfflineBanner from './src/components/OfflineBanner';
